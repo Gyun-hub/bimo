@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>Bimo</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'">
+  <link rel="stylesheet" href="node_modules/@fontsource/ibm-plex-sans-kr/400.css">
+  <link rel="stylesheet" href="node_modules/@fontsource/ibm-plex-sans-kr/500.css">
+  <link rel="stylesheet" href="node_modules/@fontsource/ibm-plex-sans-kr/600.css">
+  <link rel="stylesheet" href="node_modules/@xterm/xterm/css/xterm.css">
+  <link rel="stylesheet" href="node_modules/codemirror/lib/codemirror.css">
+  <link rel="stylesheet" href="node_modules/codemirror/addon/dialog/dialog.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="launcher">
+    <button id="side-toggle" class="icon-btn" aria-controls="sidebar" aria-expanded="false" title="프로젝트 사이드바">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><rect x="2" y="3" width="14" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="7" y1="3" x2="7" y2="15" stroke="currentColor" stroke-width="1.5"/></svg>
+    </button>
+    <img class="logo" src="build/icon.png" alt="" width="24" height="24">
+    <span class="brand">Bimo</span>
+    <button id="app-version" class="ver" title="눌러서 버전별 바뀐 점 보기"></button>
+    <div class="agents-pick" role="radiogroup" aria-label="실행할 에이전트"></div>
+    <button id="agents-refresh" class="icon-btn" title="설치된 AI CLI 다시 찾기 (앱 창으로 돌아올 때도 자동으로 찾습니다)">
+      <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <span class="header-gap"></span>
+    <button id="add" class="launch" title="새 세션 (Ctrl+N)">+ 새 세션</button>
+    <div class="importer">
+      <button id="import" aria-haspopup="dialog" aria-expanded="false" title="다른 터미널에서 했던 AI 대화를 보드에서 이어서 엽니다">세션 가져오기</button>
+      <div id="import-pop" hidden role="dialog" aria-label="세션 가져오기">
+        <div class="import-tabs" role="tablist"></div>
+        <input id="import-search" placeholder="대화를 보드로 끌어다 놓거나 눌러서 이어 열기. 첫 메시지·폴더로 찾기" autocomplete="off" spellcheck="false">
+        <ul id="import-list"></ul>
+      </div>
+    </div>
+  </header>
+  <div id="usage-pop" hidden role="tooltip"></div>
+  <div id="collab-pop" hidden role="dialog" aria-label="협업할 세션"></div>
+  <div id="alias-pop" hidden role="dialog" aria-label="프로젝트 묶음"></div>
+  <div id="group-menu" hidden role="menu"></div>
+  <div id="news" hidden>
+    <div class="news-box" role="dialog" aria-modal="true" aria-labelledby="news-title">
+      <h2 id="news-title"></h2>
+      <div id="news-list"><div id="news-track"></div></div>
+      <div class="news-actions">
+        <button id="news-prev" class="news-arrow" aria-label="이전 버전">‹</button>
+        <span id="news-dots"></span>
+        <button id="news-next" class="news-arrow" aria-label="다음 버전">›</button>
+        <span class="news-gap"></span>
+        <button id="news-never">다시 보지 않기</button>
+        <button id="news-close" class="primary">닫기</button>
+      </div>
+    </div>
+  </div>
+  <div id="quit-pop" hidden>
+    <div class="quit-box" role="alertdialog" aria-modal="true" aria-labelledby="quit-title" aria-describedby="quit-text">
+      <div class="quit-top">
+        <span class="quit-icon" aria-hidden="true">?</span>
+        <div>
+          <div class="quit-title" id="quit-title">종료 확인</div>
+          <p class="quit-text" id="quit-text"></p>
+        </div>
+      </div>
+      <div class="quit-actions">
+        <button id="quit-ok" type="button">종료</button>
+        <button id="quit-cancel" type="button">취소</button>
+      </div>
+    </div>
+  </div>
+  <!-- 새 세션: 화면 가운데 창. 위에서 AI, 아래에서 폴더를 고르면 바로 실행 -->
+  <div id="new-pop" hidden>
+    <div class="new-box" role="dialog" aria-modal="true" aria-label="새 세션">
+      <div class="new-head">
+        <span class="new-title">새 세션</span>
+        <div class="new-agents" role="radiogroup" aria-label="실행할 AI"></div>
+      </div>
+      <input id="folder-search" placeholder="폴더 이름이나 경로로 찾기, 경로를 붙여넣어도 됩니다. Enter 로 실행" autocomplete="off" spellcheck="false">
+      <ul id="folder-list" role="listbox"></ul>
+      <button id="folder-browse" type="button">다른 폴더 찾아보기…</button>
+    </div>
+  </div>
+  <aside id="sidebar" hidden>
+    <div class="side-resize" title="끌어서 사이드바 폭 바꾸기"></div>
+    <div class="side-head">
+      <div class="side-tabs" role="tablist" aria-label="사이드바">
+        <button id="tab-projects" role="tab" aria-selected="true">프로젝트</button>
+        <button id="tab-files" role="tab" aria-selected="false">파일</button>
+      </div>
+      <button id="side-add" class="icon-btn" title="프로젝트 폴더 추가 (탐색기에서 고르기)" aria-label="프로젝트 폴더 추가">
+        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+      <button id="side-refresh" class="icon-btn" title="목록 새로고침">
+        <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+    <div id="side-list"></div>
+    <div id="side-files" hidden>
+      <div class="files-head">
+        <span id="files-title">세션을 누르면 그 프로젝트 파일이 나옵니다</span>
+        <span id="files-meta"></span>
+      </div>
+      <div class="files-tools">
+        <input id="files-search" placeholder="파일 이름으로 찾기" autocomplete="off" spellcheck="false">
+        <label class="files-changed"><input type="checkbox" id="files-only-changed"> 변경만</label>
+      </div>
+      <div id="files-tree" role="tree"></div>
+    </div>
+    <form id="wt-form" hidden>
+      <span id="wt-repo"></span>
+      <input id="wt-branch" placeholder="브랜치 이름, 없으면 새로 만듭니다" autocomplete="off" spellcheck="false">
+      <span id="wt-error" role="alert"></span>
+      <div class="wt-form-actions">
+        <button type="button" id="wt-cancel">취소</button>
+        <button type="submit" id="wt-submit">만들고 실행</button>
+      </div>
+    </form>
+  </aside>
+  <nav id="doc-tabs" hidden aria-label="열어 둔 파일"></nav>
+  <section id="docs" hidden aria-label="파일 보기">
+    <div class="doc-bar"><span id="doc-path"></span></div>
+    <div class="doc-body">
+      <div id="doc-code"></div>
+      <div class="doc-split" title="끌어서 좌우 폭 바꾸기"></div>
+      <article id="doc-md" class="md-view"></article>
+    </div>
+  </section>
+  <main id="viewport">
+    <div id="mode-hud" aria-live="polite"><kbd></kbd><span></span></div>
+    <div id="board"></div>
+    <div id="empty">
+      <p class="empty-title">보드가 비어 있습니다</p>
+      <p>위에서 에이전트와 폴더를 고르고 실행하세요. H 를 누르고 끌거나 휠 버튼으로 끌면 보드가 움직이고, Ctrl+휠로 확대합니다. Ctrl을 누른 채 세션을 누르면 여러 세션을 골라 한 번에 말을 보낼 수 있습니다.</p>
+    </div>
+    <div id="color-pop" hidden role="dialog" aria-label="프로젝트 색"></div>
+    <div id="link-hint" hidden>협업할 세션을 누르세요. Esc 를 누르거나 빈 곳을 누르면 취소됩니다.</div>
+    <aside id="keys" aria-label="단축키">
+      <button id="keys-toggle" aria-expanded="true" aria-controls="keys-list" title="단축키 접기/펴기">단축키</button>
+      <dl id="keys-list">
+        <dt><kbd>V</kbd></dt><dd>선택 모드</dd>
+        <dt><kbd>H</kbd></dt><dd>이동 모드, 어디서 끌어도 보드가 움직임</dd>
+        <dt><kbd>Space</kbd> 누른 채 끌기</dt><dd>잠깐 이동 모드</dd>
+        <dt>휠 / 휠 버튼 끌기</dt><dd>보드 이동</dd>
+        <dt><kbd>Ctrl</kbd> + 휠</dt><dd>확대·축소</dd>
+        <dt><kbd>Ctrl</kbd> + 세션 클릭</dt><dd>여러 세션 고르기</dd>
+        <dt><kbd>Ctrl</kbd> + <kbd>1</kbd>~<kbd>9</kbd></dt><dd>그 번호 세션으로 가기</dd>
+        <dt><kbd>Ctrl</kbd> + <kbd>K</kbd></dt><dd>보내기 창 열기</dd>
+        <dt><kbd>Alt</kbd> + <kbd>Backspace</kbd></dt><dd>입력한 프롬프트 통째로 지우기</dd>
+        <dt><kbd>@</kbd>이름</dt><dd>그 세션에 보내기</dd>
+        <dt>세션 오른쪽 위 <kbd>협업</kbd></dt><dd>협업할 세션을 체크로 고름. 협업하는 세션끼리 서로 일을 맡기고 답을 받음. 파랑 = 아직 없음, 초록 = 있음</dd>
+        <dt>세션 왼쪽 가운데 점 끌기</dt><dd>다른 세션에 놓아 바로 협업 연결</dd>
+        <dt>연결선 클릭</dt><dd>협업 끊기</dd>
+        <dt>세션 이름 더블클릭</dt><dd>이름 바꾸기</dd>
+        <dt><kbd>Esc</kbd></dt><dd>창 닫기·고르기 취소</dd>
+        <dt>캐릭터</dt><dd><label class="keys-opt"><input type="checkbox" id="opt-critters"> 세션 위 픽셀 캐릭터</label><select id="opt-critter-kind" aria-label="캐릭터 고르기"></select></dd>
+        <dt>사용량</dt><dd><label class="keys-opt"><input type="checkbox" id="opt-claude-usage"> Claude 남은 사용량 보기 (비공식 API, Claude Code 로그인 토큰으로 이 PC 에서만 조회)</label></dd>
+      </dl>
+    </aside>
+    <div id="update-bar" hidden role="status">
+      <span id="update-text"></span>
+      <button id="update-go" type="button"></button>
+      <button id="update-later" class="icon-btn" type="button" aria-label="나중에">×</button>
+    </div>
+    <div id="toast" hidden role="status" aria-live="polite"></div>
+    <section id="inbox" hidden aria-label="확인 안 한 응답">
+      <span class="inbox-head">새 응답 <span id="inbox-count"></span></span>
+      <ul id="inbox-list"></ul>
+    </section>
+    <form id="cast" autocomplete="off">
+      <ul id="mention-list" hidden role="listbox" aria-label="세션 이름"></ul>
+      <select id="cast-to" aria-label="보낼 대상"></select>
+      <input id="cast-text" placeholder="@세션이름 할 일, 또는 대상 고르고 보내기 (Ctrl+K)" spellcheck="false">
+      <button type="submit">보내기</button>
+    </form>
+    <div id="corner">
+      <canvas id="minimap" width="200" height="124" aria-label="보드 미니맵"></canvas>
+      <div class="corner-row">
+        <div class="tools" role="group" aria-label="보드 도구">
+          <button id="tool-select" aria-pressed="true" title="선택 (V): 세션을 누르고 글자를 고름, Ctrl+클릭으로 여러 세션 고르기">선택 V</button>
+          <button id="tool-hand" aria-pressed="false" title="이동 (H): 끌어서 보드 움직이기">이동 H</button>
+        </div>
+        <button id="tidy" title="폴더별로 겹치지 않게 정렬">정렬</button>
+        <button id="zoom" title="원래 배율로">100%</button>
+      </div>
+    </div>
+  </main>
+  <script src="node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="node_modules/codemirror/lib/codemirror.js"></script>
+  <script src="node_modules/codemirror/addon/mode/overlay.js"></script>
+  <script src="node_modules/codemirror/addon/mode/simple.js"></script>
+  <script src="node_modules/codemirror/addon/mode/multiplex.js"></script>
+  <script src="node_modules/codemirror/addon/dialog/dialog.js"></script>
+  <script src="node_modules/codemirror/addon/search/searchcursor.js"></script>
+  <script src="node_modules/codemirror/addon/search/search.js"></script>
+  <script src="node_modules/codemirror/addon/edit/matchbrackets.js"></script>
+  <script src="node_modules/codemirror/addon/selection/active-line.js"></script>
+  <script src="node_modules/codemirror/mode/meta.js"></script>
+  <script src="node_modules/codemirror/mode/javascript/javascript.js"></script>
+  <script src="node_modules/codemirror/mode/css/css.js"></script>
+  <script src="node_modules/codemirror/mode/xml/xml.js"></script>
+  <script src="node_modules/codemirror/mode/htmlmixed/htmlmixed.js"></script>
+  <script src="node_modules/codemirror/mode/markdown/markdown.js"></script>
+  <script src="node_modules/codemirror/mode/gfm/gfm.js"></script>
+  <script src="node_modules/codemirror/mode/sql/sql.js"></script>
+  <script src="node_modules/codemirror/mode/python/python.js"></script>
+  <script src="node_modules/codemirror/mode/clike/clike.js"></script>
+  <script src="node_modules/codemirror/mode/go/go.js"></script>
+  <script src="node_modules/codemirror/mode/rust/rust.js"></script>
+  <script src="node_modules/codemirror/mode/shell/shell.js"></script>
+  <script src="node_modules/codemirror/mode/powershell/powershell.js"></script>
+  <script src="node_modules/codemirror/mode/yaml/yaml.js"></script>
+  <script src="node_modules/codemirror/mode/toml/toml.js"></script>
+  <script src="node_modules/codemirror/mode/properties/properties.js"></script>
+  <script src="node_modules/codemirror/mode/dockerfile/dockerfile.js"></script>
+  <script src="node_modules/codemirror/mode/diff/diff.js"></script>
+  <script src="node_modules/codemirror/mode/groovy/groovy.js"></script>
+  <script src="node_modules/codemirror/mode/jsx/jsx.js"></script>
+  <script src="node_modules/marked/lib/marked.umd.js"></script>
+  <script src="node_modules/dompurify/dist/purify.min.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

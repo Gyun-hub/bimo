@@ -1,0 +1,35 @@
+# Mac 설치 파일(.dmg) 만들기. Actions 탭에서 "Run workflow" 로 돌리면 결과 화면 아래 Artifacts 에 dmg 가 생긴다.
+name: Mac build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      # 빌드 서버는 Apple 실리콘이라 인텔용 터미널 모듈은 따로 받아 둔다
+      - run: npm install --no-save --force @lydell/node-pty-darwin-x64@1.2.0-beta.15
+      - run: npm run dist:mac
+      # 만든 앱을 실제로 띄워 터미널(zsh)에서 echo 결과가 나오는지 본다
+      - name: Smoke test
+        env:
+          SMOKE_MS: '6000'
+          BIMO_USER_DATA: ${{ runner.temp }}/pb-data
+          SMOKE_JS: >-
+            (async()=>{await new Promise(r=>setTimeout(r,4000)); const n=[...nodes.values()][0]; const b=n.term.buffer.active; const lines=[]; for(let i=0;i<b.length;i++) lines.push(b.getLine(i).translateToString(true).trim()); return JSON.stringify({ok: lines.includes('smoke-ok'), lines: lines.filter(Boolean).slice(-6)})})()
+        run: |
+          out=$(release/mac-arm64/Bimo.app/Contents/MacOS/Bimo --smoke 2>&1 || true)
+          echo "$out" | grep SMOKE_
+          echo "$out" | grep -q '\\"ok\\":true'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bimo-mac
+          path: |
+            release/*.dmg
+            release/latest-mac.yml

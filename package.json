@@ -1,0 +1,83 @@
+{
+  "name": "bimo",
+  "productName": "Bimo",
+  "version": "0.2.6",
+  "private": true,
+  "license": "MIT",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "package": "electron-packager . Bimo --platform=win32 --arch=x64 --out=dist --overwrite --ignore=^/dist --ignore=^/tests --ignore=^/tools --icon=build/icon.ico --asar.unpack=**/{*.node,conpty/*}",
+    "test:resize": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/run-resize.ps1",
+    "dist:win": "electron-builder --win nsis --x64 --publish never",
+    "dist:mac": "electron-builder --mac dmg zip --arm64 --x64 --publish never"
+  },
+  "build": {
+    "appId": "io.github.gyun-hub.bimo",
+    "productName": "Bimo",
+    "extraMetadata": {
+      "appId": "io.github.gyun-hub.bimo"
+    },
+    "directories": {
+      "output": "release",
+      "buildResources": "installer"
+    },
+    "files": [
+      "**/*",
+      "!dist/**",
+      "!release/**",
+      "!tests/**",
+      "!tools/**",
+      "!installer/**"
+    ],
+    "asarUnpack": [
+      "**/*.node",
+      "**/conpty/*",
+      "**/spawn-helper"
+    ],
+    "npmRebuild": false,
+    "afterPack": "installer/adhoc-sign.js",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Gyun-hub",
+        "repo": "bimo"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "Bimo-Setup-${version}.${ext}"
+    },
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.developer-tools",
+      "identity": null,
+      "hardenedRuntime": false,
+      "artifactName": "Bimo-${version}-${arch}.${ext}"
+    }
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-sans-kr": "^5.3.0",
+    "@lydell/node-pty": "^1.2.0-beta.15",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "codemirror": "5.65.20",
+    "dompurify": "^3.2.6",
+    "electron-updater": "^6.8.9",
+    "marked": "^15.0.12"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^45.0.0",
+    "electron-builder": "^25.1.8"
+  }
+}
