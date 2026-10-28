@@ -61,6 +61,10 @@ npm run dist:mac          # macOS dmg/zip (macOS 에서)
 python -I tools/make-icon.py   # build/icon.png · icon.ico · icon.icns
 ```
 
+### 릴리스
+
+`package.json` 의 `version` 을 올려 `main` 에 머지하면 `.github/workflows/release.yml` 이 Windows·Mac 설치 파일을 빌드해 `v<버전>` Release 로 올린다. 같은 버전 Release 가 이미 있으면 건너뛴다.
+
 ### 스택
 
 Electron · xterm.js · node-pty (`@lydell/node-pty`) · CodeMirror 5 · marked + DOMPurify · electron-builder · electron-updater
