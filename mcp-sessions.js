@@ -1,10 +1,13 @@
 // Bimo 세션 호출 MCP 서버 (stdio). claude 가 띄우고, 앱의 로컬 HTTP 로 다른 세션에 말을 건다.
 // 환경 변수: BIMO_PORT = 앱 HTTP 포트, BIMO_TOKEN = 앱이 실행마다 만든 접속 토큰, BIMO_NODE = 이 claude 가 붙은 노드 id
+// 첫 인자로 설정 파일({ port, token, node })을 주면 그걸 쓴다 — codex 는 -c 로 env 를 넘기면 토큰이 명령줄에 보여서.
 const http = require('http');
 
-const PORT = process.env.BIMO_PORT;
-const TOKEN = process.env.BIMO_TOKEN || '';
-const NODE = encodeURIComponent(process.env.BIMO_NODE || '');
+let conf = { port: process.env.BIMO_PORT, token: process.env.BIMO_TOKEN, node: process.env.BIMO_NODE };
+if (process.argv[2]) try { conf = JSON.parse(require('fs').readFileSync(process.argv[2], 'utf8')); } catch {}
+const PORT = conf.port;
+const TOKEN = conf.token || '';
+const NODE = encodeURIComponent(conf.node || '');
 
 function call(method, route, body) {
   return new Promise((resolve) => {

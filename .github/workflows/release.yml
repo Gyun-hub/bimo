@@ -34,6 +34,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      - run: npm test
       - run: npm run dist:win
       - uses: actions/upload-artifact@v4
         with:
@@ -53,6 +54,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      - run: npm test
       # 빌드 서버는 Apple 실리콘이라 인텔용 터미널 모듈은 따로 받아 둔다
       - run: npm install --no-save --force @lydell/node-pty-darwin-x64@1.2.0-beta.15
       - run: npm run dist:mac

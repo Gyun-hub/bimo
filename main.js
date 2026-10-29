@@ -5,12 +5,17 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const pty = require('@lydell/node-pty');
+const board = require('./lib/board');
+const codex = require('./lib/codex');
+const { t } = require('./locales');
 
 // --smoke: 기본 보드로 띄워 스크린샷(%TEMP%\bimo-smoke.png)만 찍고 종료. 저장된 보드는 건드리지 않는다.
 // SMOKE_CMD = 스모크 노드에 입력할 명령, SMOKE_MS = 스크린샷까지 대기(ms), SMOKE_JS = 캡처 직전 렌더러에서 실행할 스크립트.
 const smoke = process.argv.includes('--smoke');
 // 테스트용: BIMO_USER_DATA = 따로 쓸 데이터 폴더, SMOKE_SAVE = 스모크에서도 보드 저장(재실행 유지 확인)
 if (process.env.BIMO_USER_DATA) app.setPath('userData', process.env.BIMO_USER_DATA);
+// 개발 실행(패키징 안 됨)은 설치본과 board.json 을 서로 덮어쓰지 않게 Bimo-dev 폴더를 쓴다.
+else if (!app.isPackaged) app.setPath('userData', path.join(app.getPath('appData'), 'Bimo-dev'));
 const keepBoard = !smoke || !!process.env.SMOKE_SAVE;
 
 const boardFile = path.join(app.getPath('userData'), 'board.json');
@@ -21,6 +26,9 @@ let hookPort;
 
 // 창이 닫힌 뒤에도 pty 출력·훅이 늦게 도착한다 — 파괴된 창에 보내면 메인 프로세스 예외가 난다.
 const send = (...args) => win && !win.isDestroyed() && win.webContents.send(...args);
+// 사용자에게 보이는 문구 언어. getLocale 은 ready 뒤에만 맞아 whenReady 에서 정하고, 화면이 settings:lang 으로 바꾼다.
+let lang = 'ko';
+const tr = (key, vars) => t(lang, key, vars);
 
 // 사용자가 중지한 서브 에이전트. 밖에서 서브 에이전트만 죽일 방법이 없어 다음 도구 호출부터 거부해 스스로 끝내게 한다.
 const stopped = new Set();
@@ -61,11 +69,13 @@ function mcpRoute(caller, route, body) {
   if (target.state === 'working' || waits.has(target.id)) return Promise.resolve({ error: `"${target.name}" 세션이 일하는 중이라 지금은 보낼 수 없습니다. 잠시 뒤 다시 시도하세요.` });
 
   const callId = ++callSeq;
-  const wait = body.wait !== false && target.command === 'claude'; // 답은 claude 의 Stop 훅으로만 알 수 있다
+  // 답은 claude 의 Stop 훅, codex 의 notify(agent-turn-complete)로만 알 수 있다
+  const wait = body.wait !== false && (target.command === 'claude' || target.command === 'codex');
   // 붙여넣기(bracketed paste)로 보내야 여러 줄이 중간에 실행되지 않는다. Enter 는 따로 보낸다.
   const p = ptys.get(target.id);
-  p.write(`\x1b[200~[세션 "${me.name}" 에서 온 요청] ${String(body.message)}\x1b[201~`);
-  setTimeout(() => p.write('\r'), 120);
+  p.write(`\x1b[200~${codex.callPrefix(me.name)} ${String(body.message)}\x1b[201~`);
+  // shortcut: codex 입력창은 붙여넣기 직후 Enter 를 줄바꿈으로 받을 수 있어 늦춘다. 600ms 는 실측 안 된 값 — 실제 Codex 로 재 보고 조정.
+  setTimeout(() => ptys.get(target.id)?.write('\r'), target.command === 'codex' ? 600 : 120);
   send('call:start', { callId, from: caller, to: target.id, wait });
   if (!wait) {
     setTimeout(() => send('call:end', callId), 1500);
@@ -117,6 +127,12 @@ const hookServer = http.createServer((req, res) => {
     let reply = '{}';
     try {
       const event = JSON.parse(body);
+      // Codex notify (-c notify 의 curl). 화면은 Claude 훅 이벤트만 알아 넘기지 않는다.
+      // 사용자가 그 세션에서 직접 한 턴이 끝나도 오므로, 세션 요청 머리말이 든 턴만 대기를 끝낸다.
+      if (event.type === 'agent-turn-complete') {
+        if (codex.isCallTurn(event['input-messages'])) resolveWait(id, { last_assistant_message: event['last-assistant-message'] });
+        return res.writeHead(200, { 'Content-Type': 'application/json' }).end(reply);
+      }
       if (event.hook_event_name === 'Stop' && !event.agent_id) resolveWait(id, event);
       if (event.hook_event_name === 'SubagentStop' && !event.last_assistant_message) event.last_assistant_message = lastReply(event.agent_transcript_path);
       // 최종 보고(SubagentHandback)는 막지 않는다 — 막으면 끝내지도 못한다.
@@ -157,8 +173,8 @@ function sessionUsage(file) {
 // 앱을 보고 있지 않을 때 답이 오거나 권한을 물으면 Windows 알림. 누르면 그 노드로 간다.
 function notifyWaiting(id, event) {
   if (!win || win.isDestroyed() || win.isFocused() || !Notification.isSupported()) return;
-  const where = path.basename(event.cwd || '') || '세션';
-  const body = event.hook_event_name === 'Stop' ? '응답이 끝났습니다. 확인해 주세요.' : event.message || '확인이 필요합니다.';
+  const where = path.basename(event.cwd || '') || tr('main.notify.session');
+  const body = event.hook_event_name === 'Stop' ? tr('main.notify.stopped') : event.message || tr('main.notify.needsInput');
   const toast = new Notification({ title: `${where}: Claude Code`, body });
   toast.on('click', () => {
     if (win.isMinimized()) win.restore();
@@ -222,26 +238,34 @@ function lastReply(file) {
 }
 
 // 세션 호출 MCP 서버 설정. 스크립트는 asar 밖(userData)에 복사해 두고, 앱 실행 파일을 node 로 띄운다(별도 node 설치 불필요).
-function mcpConfig(id) {
+function mcpScript() {
   const script = path.join(app.getPath('userData'), 'mcp-sessions.js');
   fs.copyFileSync(path.join(__dirname, 'mcp-sessions.js'), script);
+  return script;
+}
+function mcpServer(id) {
+  return { command: process.execPath, args: [mcpScript()], env: { ELECTRON_RUN_AS_NODE: '1', BIMO_PORT: String(hookPort), BIMO_TOKEN: hookToken, BIMO_NODE: id } };
+}
+function mcpConfig(id) {
   const file = path.join(hookDir, `${id}.mcp.json`);
-  fs.writeFileSync(file, JSON.stringify({
-    mcpServers: {
-      bimo: {
-        type: 'stdio',
-        command: process.execPath,
-        args: [script],
-        env: { ELECTRON_RUN_AS_NODE: '1', BIMO_PORT: String(hookPort), BIMO_TOKEN: hookToken, BIMO_NODE: id },
-      },
-    },
-  }));
+  fs.writeFileSync(file, JSON.stringify({ mcpServers: { bimo: { type: 'stdio', ...mcpServer(id) } } }));
   return file;
+}
+const hookUrl = (id) => `http://127.0.0.1:${hookPort}/hook/${hookToken}/${encodeURIComponent(id)}`;
+
+// Codex 협업 -c 인자 (lib/codex.js). 토큰·노드 id 는 명령줄에 싣지 않고 노드별 파일로 넘긴다 — 토큰이 실행마다 바뀌어 띄울 때마다 쓴다.
+function codexArgs(id, q) {
+  fs.mkdirSync(hookDir, { recursive: true });
+  const conn = path.join(hookDir, `${id}.bimo.json`);
+  const curl = path.join(hookDir, `${id}.curl`);
+  fs.writeFileSync(conn, JSON.stringify({ port: hookPort, token: hookToken, node: id }), { mode: 0o600 });
+  fs.writeFileSync(curl, codex.curlConfig(hookUrl(id)), { mode: 0o600 });
+  return codex.codexArgs({ exe: process.execPath, script: mcpScript(), conn, curl }, q);
 }
 
 // 노드별 훅 설정 파일. claude 는 --settings 로 이 파일만 추가로 읽고, 사용자 전역 설정은 건드리지 않는다.
 function hookSettings(id) {
-  const hook = [{ type: 'http', url: `http://127.0.0.1:${hookPort}/hook/${hookToken}/${encodeURIComponent(id)}`, timeout: 3 }];
+  const hook = [{ type: 'http', url: hookUrl(id), timeout: 3 }];
   const file = path.join(hookDir, `${id}.json`);
   fs.mkdirSync(hookDir, { recursive: true });
   fs.writeFileSync(file, JSON.stringify({
@@ -319,6 +343,13 @@ ipcMain.on('app:close', () => {
   closeConfirmed = true;
   win?.close();
 });
+// 언어 바꾼 뒤 다시 시작. 종료 확인은 화면이 먼저 받았다. 실제 재실행은 window-all-closed 의 app.exit 때 일어난다.
+// --smoke 를 그대로 넘기면 새 프로세스가 또 스모크로 떠 끝없이 반복될 수 있어 뺀다.
+ipcMain.on('app:relaunch', () => {
+  closeConfirmed = true;
+  app.relaunch({ args: process.argv.slice(1).filter((a) => a !== '--smoke') });
+  win?.close();
+});
 
 // 앱을 claude 안에서 띄우면 부모 세션 표식이 따라와 자식 claude 가 transcript 를 안 남긴다(이어하기 불가). 세션 묶음 변수만 뺀다.
 const PARENT_SESSION_VARS = ['CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT',
@@ -343,19 +374,23 @@ function hasTranscript(sessionId) {
 // 에이전트도 PowerShell 안에서 실행한다 — npm .cmd 심(codex, gemini)이 그대로 돌고, 종료 후 셸이 남는다.
 // claude 는 세션 id 를 앱이 정해서 띄우고, 다음 실행 때 그 id 로 이어한다.
 ipcMain.handle('pty:spawn', (e, { id, command, cwd, cols, rows, sessionId }) => {
-  if (!/^[\w-]{1,80}$/.test(id)) return '실행 실패: 잘못된 세션 id';
+  if (!/^[\w-]{1,80}$/.test(id)) return tr('main.pty.badId');
   const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
   const settings = hookSettings(id);
+  // 경로에 ' 가 있어도(사용자 폴더 이름 등) 명령이 깨지지 않게 셸에 맞춰 감싼다
+  const q = (s) => (isWin ? `'${s.replace(/'/g, "''")}'` : `'${s.replace(/'/g, "'\\''")}'`);
+  const resumeId = /^[\w-]{8,80}$/.test(sessionId || '') ? sessionId : null; // PowerShell 명령에 들어가므로 형식 검사
   if (command === 'claude') {
     const sid = /^[0-9a-f-]{36}$/i.test(sessionId || '') ? sessionId : null; // PowerShell 명령에 들어가므로 형식 검사
     const session = sid ? (hasTranscript(sid) ? `--resume ${sid}` : `--session-id ${sid}`) : '';
-    // 경로에 ' 가 있어도(사용자 폴더 이름 등) 명령이 깨지지 않게 셸에 맞춰 감싼다
-    const q = (s) => (isWin ? `'${s.replace(/'/g, "''")}'` : `'${s.replace(/'/g, "'\\''")}'`);
     command = `claude ${session} --settings ${q(settings)} --mcp-config ${q(mcpConfig(id))}`;
-  } else if (/^[\w-]{8,80}$/.test(sessionId || '')) {
-    // 가져온 Codex·Cursor 대화 이어 열기 (PowerShell 명령에 들어가므로 형식 검사)
-    if (command === 'codex') command = `codex resume ${sessionId}`;
-    else if (command === 'cursor-agent') command = `cursor-agent --resume ${sessionId}`;
+  } else if (command === 'codex') {
+    // 가져온 Codex 대화 이어 열기에도 같은 -c 를 붙인다 (-c 는 하위 명령 앞에 둔다)
+    const cx = codexArgs(id, q);
+    command = `codex${cx ? ` ${cx}` : ''}${resumeId ? ` resume ${resumeId}` : ''}`;
+  } else if (resumeId && command === 'cursor-agent') {
+    // 가져온 Cursor 대화 이어 열기
+    command = `cursor-agent --resume ${resumeId}`;
   }
   // Mac·리눅스: 로그인 셸에서 실행하고, 끝나면 같은 셸이 남게 exec 로 이어 준다
   const [shell, args] = isWin
@@ -374,9 +409,9 @@ ipcMain.handle('pty:spawn', (e, { id, command, cwd, cols, rows, sessionId }) => 
       send('pty:exit', id, exitCode);
     });
     ptys.set(id, p);
-    return cwd && dir !== cwd ? `작업 폴더 없음, 홈에서 시작: ${cwd}` : null;
+    return cwd && dir !== cwd ? tr('main.pty.noCwd', { cwd }) : null;
   } catch (err) {
-    return `실행 실패: ${err.message}`;
+    return tr('main.pty.failed', { error: err.message });
   }
 });
 // xterm windowsPty.buildNumber: 번들 ConPTY 는 최신이라 OS 빌드(Win10=19045)가 아니라 최신 빌드로 알려야
@@ -420,10 +455,10 @@ async function claudeUsage() {
   try {
     cred = JSON.parse(await readClaudeCred()).claudeAiOauth;
   } catch {
-    return Promise.resolve({ error: 'Claude Code 로그인 정보를 찾지 못했습니다. claude 를 실행해 로그인하세요.' });
+    return Promise.resolve({ error: tr('main.usage.noCred') });
   }
-  if (!cred?.accessToken) return Promise.resolve({ error: 'Claude Code 로그인 정보가 없습니다.' });
-  if (cred.expiresAt && cred.expiresAt < Date.now()) return Promise.resolve({ error: '로그인 토큰이 만료됐습니다. claude 를 한 번 실행하면 갱신됩니다.' });
+  if (!cred?.accessToken) return Promise.resolve({ error: tr('main.usage.emptyCred') });
+  if (cred.expiresAt && cred.expiresAt < Date.now()) return Promise.resolve({ error: tr('main.usage.expired') });
   return new Promise((resolve) => {
     const req = require('https').request({
       hostname: 'api.anthropic.com',
@@ -435,20 +470,20 @@ async function claudeUsage() {
       let body = '';
       res.on('data', (c) => (body += c));
       res.on('end', () => {
-        if (res.statusCode === 429) return resolve({ error: '사용량 조회가 잠시 막혔습니다. 조금 뒤 다시 보세요.' });
-        if (res.statusCode !== 200) return resolve({ error: `사용량을 가져오지 못했습니다 (HTTP ${res.statusCode}).` });
+        if (res.statusCode === 429) return resolve({ error: tr('main.usage.rateLimited') });
+        if (res.statusCode !== 200) return resolve({ error: tr('main.usage.http', { status: res.statusCode }) });
         try {
           const j = JSON.parse(body);
           const limits = BUCKETS.filter(([k]) => j[k]?.utilization != null)
             .map(([k, label]) => ({ label, used: j[k].utilization, resetsAt: j[k].resets_at }));
           resolve({ plan: cred.subscriptionType, limits });
         } catch {
-          resolve({ error: '사용량 응답을 읽지 못했습니다.' });
+          resolve({ error: tr('main.usage.badResponse') });
         }
       });
     });
     req.on('timeout', () => req.destroy());
-    req.on('error', () => resolve({ error: '사용량 서버에 연결하지 못했습니다.' }));
+    req.on('error', () => resolve({ error: tr('main.usage.offline') }));
     req.end();
   });
 }
@@ -467,7 +502,7 @@ function codexUsage() {
     }
   };
   try { walk(root); } catch {}
-  if (!files.length) return { error: 'Codex 사용 기록이 없습니다. codex 를 한 번 쓰면 보입니다.' };
+  if (!files.length) return { error: tr('main.usage.codexNoLog') };
   files.sort((x, y) => y.m - x.m);
   for (const f of files.slice(0, 30)) {
     let lines;
@@ -490,11 +525,11 @@ function codexUsage() {
         };
       };
       const min = Math.round((Date.now() - at) / 60000);
-      const ago = min < 1 ? '방금' : min < 60 ? `${min}분 전` : min < 1440 ? `${Math.round(min / 60)}시간 전` : `${Math.round(min / 1440)}일 전`;
-      return { note: `이 PC 에서 마지막으로 codex 를 쓴 때(${ago}) 기준. 다른 곳에서 쓴 양은 빠집니다.`, limits: [one(rl.primary, '5시간'), one(rl.secondary, '주간')].filter(Boolean) };
+      const ago = min < 1 ? tr('main.ago.now') : min < 60 ? tr('main.ago.min', { n: min }) : min < 1440 ? tr('main.ago.hour', { n: Math.round(min / 60) }) : tr('main.ago.day', { n: Math.round(min / 1440) });
+      return { note: tr('main.usage.codexNote', { ago }), limits: [one(rl.primary, '5시간'), one(rl.secondary, '주간')].filter(Boolean) };
     }
   }
-  return { error: 'Codex 기록에 사용량 정보가 없습니다. codex 에서 한 번 대화하면 보입니다.' };
+  return { error: tr('main.usage.codexNoInfo') };
 }
 
 ipcMain.handle('usage:get', async (e, agent) => {
@@ -503,7 +538,7 @@ ipcMain.handle('usage:get', async (e, agent) => {
   if (agent === 'claude' && hit && Date.now() - hit.at < 60000) return hit.result;
   const result = agent === 'claude' ? await claudeUsage()
     : agent === 'codex' ? codexUsage()
-    : { error: '이 AI 는 남은 사용량을 알아낼 방법이 없습니다.' };
+    : { error: tr('main.usage.unsupported') };
   usageCache.set(agent, { at: Date.now(), result });
   return result;
 });
@@ -539,7 +574,7 @@ ipcMain.handle('files:resolve', (e, cwd, cands) => cands.map((p) => {
 // 실행할 작업 폴더를 탐색기(Finder)에서 고르기
 ipcMain.handle('dialog:folder', async (e, start) => {
   const r = await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), {
-    title: '작업 폴더 고르기',
+    title: tr('main.dialog.pickFolder'),
     defaultPath: start && fs.existsSync(start) ? start : os.homedir(),
     properties: ['openDirectory', 'createDirectory'],
   });
@@ -743,9 +778,9 @@ async function searchList(dir) {
 ipcMain.handle('files:read', (e, file) => {
   try {
     const st = fs.statSync(file);
-    if (st.size > 1024 * 1024) return { error: `파일이 커서(${Math.round(st.size / 1024)}KB) 미리보기를 하지 않습니다.` };
+    if (st.size > 1024 * 1024) return { error: tr('main.files.tooBig', { kb: Math.round(st.size / 1024) }) };
     const buf = fs.readFileSync(file);
-    if (buf.subarray(0, 8000).includes(0)) return { error: '글자가 아닌 파일이라 미리보기를 하지 않습니다.' };
+    if (buf.subarray(0, 8000).includes(0)) return { error: tr('main.files.binary') };
     return { text: buf.toString('utf8'), mtime: st.mtimeMs };
   } catch (err) {
     return { error: err.message };
@@ -760,27 +795,27 @@ const badName = (name) => !name || /[\\/:*?"<>|]/.test(name) || name === '.' || 
 ipcMain.handle('files:op', async (e, op, root, target, name) => {
   try {
     if (op === 'create') { // target = 만들 폴더(root 자신이거나 그 안)
-      if (path.resolve(target) !== path.resolve(root) && !insideRoot(root, target)) return { error: '프로젝트 폴더 밖입니다.' };
-      if (badName(name.name)) return { error: '쓸 수 없는 이름입니다.' };
+      if (path.resolve(target) !== path.resolve(root) && !insideRoot(root, target)) return { error: tr('main.files.outside') };
+      if (badName(name.name)) return { error: tr('main.files.badName') };
       const dest = path.join(target, name.name);
-      if (fs.existsSync(dest)) return { error: '같은 이름이 이미 있습니다.' };
+      if (fs.existsSync(dest)) return { error: tr('main.files.exists') };
       if (name.isDir) fs.mkdirSync(dest);
       else fs.writeFileSync(dest, '', { flag: 'wx' });
       return { path: dest };
     }
     if (op === 'reveal' && path.resolve(target) === path.resolve(root)) { shell.openPath(root); return { ok: true }; }
-    if (!insideRoot(root, target)) return { error: '프로젝트 폴더 밖입니다.' };
+    if (!insideRoot(root, target)) return { error: tr('main.files.outside') };
     if (op === 'rename') {
-      if (badName(name)) return { error: '쓸 수 없는 이름입니다.' };
+      if (badName(name)) return { error: tr('main.files.badName') };
       const dest = path.join(path.dirname(target), name);
       // Windows 는 대소문자만 바꾸는 이름도 "이미 있음" 으로 보이니 같은 파일이면 허용
-      if (fs.existsSync(dest) && dest.toLowerCase() !== target.toLowerCase()) return { error: '같은 이름이 이미 있습니다.' };
+      if (fs.existsSync(dest) && dest.toLowerCase() !== target.toLowerCase()) return { error: tr('main.files.exists') };
       fs.renameSync(target, dest);
       return { path: dest };
     }
     if (op === 'trash') { await shell.trashItem(target); return { ok: true }; }
     if (op === 'reveal') { shell.showItemInFolder(target); return { ok: true }; }
-    return { error: `알 수 없는 작업: ${op}` };
+    return { error: tr('main.files.unknownOp', { op }) };
   } catch (err) {
     return { error: err.message };
   }
@@ -789,7 +824,7 @@ ipcMain.handle('files:op', async (e, op, root, target, name) => {
 ipcMain.handle('files:write', (e, file, text, mtime, force) => {
   try {
     const st = fs.statSync(file);
-    if (!st.isFile()) return { error: '파일이 아닙니다.' };
+    if (!st.isFile()) return { error: tr('main.files.notFile') };
     if (!force && mtime && Math.abs(st.mtimeMs - mtime) > 1) return { conflict: true };
     fs.writeFileSync(file, text, 'utf8');
     return { mtime: fs.statSync(file).mtimeMs };
@@ -805,9 +840,9 @@ const git = (cwd, args) => new Promise((resolve) => {
 // 사이드바 워크트리 만들기: <저장소 상위>\<저장소>.worktrees\<브랜치> 에 만든다. 브랜치가 없으면 새로 판다.
 ipcMain.handle('git:worktree-add', async (e, repo, branch) => {
   branch = String(branch).trim();
-  if (branch.startsWith('-') || (await git(repo, ['check-ref-format', '--branch', branch])) == null) return { error: `브랜치 이름으로 쓸 수 없습니다: ${branch}` };
+  if (branch.startsWith('-') || (await git(repo, ['check-ref-format', '--branch', branch])) == null) return { error: tr('main.git.badBranch', { branch }) };
   const dir = path.join(path.dirname(repo), `${path.basename(repo)}.worktrees`, branch.replace(/[\\/]/g, '-'));
-  if (fs.existsSync(dir)) return { error: `이미 있는 폴더입니다: ${dir}` };
+  if (fs.existsSync(dir)) return { error: tr('main.git.dirExists', { dir }) };
   const exists = (await git(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])) != null;
   return new Promise((resolve) => {
     const args = exists ? ['worktree', 'add', dir, branch] : ['worktree', 'add', '-b', branch, dir];
@@ -815,15 +850,27 @@ ipcMain.handle('git:worktree-add', async (e, repo, branch) => {
   });
 });
 
-ipcMain.handle('board:load', () => (keepBoard && fs.existsSync(boardFile) ? JSON.parse(fs.readFileSync(boardFile, 'utf8')) : null));
-ipcMain.on('board:save', (e, board) => {
-  if (keepBoard) fs.writeFileSync(boardFile, JSON.stringify(board, null, 2));
+// 읽기 실패·더 새 형식이면 이번 실행 동안 저장하지 않는다 — 빈 보드나 옛 형식으로 원본을 덮지 않게.
+let boardLoadFailed = false;
+ipcMain.handle('board:load', () => {
+  if (!keepBoard) return null;
+  try {
+    const b = board.loadBoard(boardFile);
+    if (board.tooNew(b)) { boardLoadFailed = true; console.error(`board.json 형식 v${b.version} 이 이 앱(v${board.BOARD_VERSION})보다 새로워 이번 실행에서는 저장하지 않습니다.`); }
+    return b;
+  } catch (err) { boardLoadFailed = true; console.error('보드 읽기 실패, 이번 실행에서는 저장하지 않습니다:', err.message); throw err; }
+});
+ipcMain.on('board:save', (e, data) => {
+  if (!keepBoard) return;
+  if (boardLoadFailed) return console.error('보드 저장 건너뜀: 읽기 실패 또는 더 새 형식');
+  try { board.saveBoard(boardFile, data); } catch (err) { console.error('보드 저장 실패:', err.message); }
 });
 
 // Windows 알림 표시 + 작업 표시줄 고정. 설치 바로가기의 ID(appId)와 같아야 업데이트 뒤에도 고정이 유지된다.
 // 빌드 설정의 extraMetadata.appId 로 패키지된 package.json 에 들어온다.
 app.setAppUserModelId(require('./package.json').appId || 'io.github.gyun-hub.bimo');
 app.whenReady().then(() => {
+  lang = app.getLocale().startsWith('ko') ? 'ko' : 'en';
   hookServer.listen(0, '127.0.0.1', () => {
     hookPort = hookServer.address().port;
     createWindow();
@@ -862,7 +909,7 @@ let updater = null;
 let readyVersion = null; // Windows: 받아 둔 새 버전
 async function checkUpdate(manual) {
   const feed = updateFeed();
-  if (!feed) return { status: 'off', message: '업데이트 배포처가 설정되지 않은 빌드입니다.' };
+  if (!feed) return { status: 'off', message: tr('main.update.off') };
   if (readyVersion) {
     send('update:ready', readyVersion);
     return { status: 'ready', version: readyVersion };
@@ -888,15 +935,16 @@ async function checkUpdate(manual) {
     if (!v || !newer(v, app.getVersion())) return { status: 'latest', version: app.getVersion() };
     const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
     const dmg = yml.match(new RegExp(`url:\\s*(\\S+-${arch}\\.dmg)`))?.[1];
-    if (!dmg) throw new Error('dmg 파일을 찾지 못했습니다');
+    if (!dmg) throw new Error(tr('main.update.noDmg'));
     const url = feed.file(v, dmg);
     send('update:manual', { version: v, url });
     return { status: 'manual', version: v, url };
   } catch (err) {
-    return { status: 'error', message: manual ? `업데이트 배포처에 연결하지 못했습니다: ${err.message}` : '' };
+    return { status: 'error', message: manual ? tr('main.update.failed', { error: err.message }) : '' };
   }
 }
 ipcMain.handle('app:version', () => app.getVersion());
+ipcMain.on('settings:lang', (e, l) => { if (l === 'ko' || l === 'en') lang = l; });
 ipcMain.handle('update:check', () => checkUpdate(true));
 ipcMain.on('update:install', () => {
   closeConfirmed = true; // 다시 시작은 사용자가 고른 것이라 종료 확인을 건너뛴다

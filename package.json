@@ -1,13 +1,14 @@
 {
   "name": "bimo",
   "productName": "Bimo",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "license": "MIT",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "smoke": "electron . --smoke",
+    "test": "node --test tests/unit/*.test.js",
     "package": "electron-packager . Bimo --platform=win32 --arch=x64 --out=dist --overwrite --ignore=^/dist --ignore=^/tests --ignore=^/tools --icon=build/icon.ico --asar.unpack=**/{*.node,conpty/*}",
     "test:resize": "powershell -NoProfile -ExecutionPolicy Bypass -File tests/run-resize.ps1",
     "dist:win": "electron-builder --win nsis --x64 --publish never",

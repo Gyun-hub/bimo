@@ -4,7 +4,6 @@ const AGENTS = [
   ['aider', 'Aider'], ['cursor-agent', 'Cursor'], ['copilot', 'Copilot'], ['amp', 'Amp'],
 ];
 const LABELS = { '': 'PowerShell', ...Object.fromEntries(AGENTS) };
-const STATUS = { running: '실행 중', done: '완료', error: '실패', stopped: '중단' };
 const smoke = new URLSearchParams(location.search).get('smoke');
 const $ = (id) => document.getElementById(id);
 const viewport = $('viewport');
@@ -22,7 +21,7 @@ const ZOOM_MAX = 4;
 let topZ = 1;
 let saveTimer;
 
-const basename = (p) => (p ? p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : '홈 폴더');
+const basename = (p) => (p ? p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : tr('ui.home'));
 const el = (tag, cls, text) => Object.assign(document.createElement(tag), cls ? { className: cls } : {}, text != null ? { textContent: text } : {});
 
 // 선택값은 이 PC 에서만 기억하는 편의 기능이라 localStorage 로 충분하다.
@@ -32,6 +31,22 @@ const pref = {
 };
 // 아무것도 기억된 게 없으면 처음 설치한 것(업데이트 안내를 띄우지 않는다)
 const firstRun = (() => { try { return localStorage.length === 0; } catch { return false; } })();
+// 화면 언어: 설정값 → OS 언어(ko 면 한국어, 그 밖은 영어). 바꾸면 다시 시작해야 적용된다(동적 화면이 많아 실시간으로 다시 그리지 않는다).
+const lang = ['ko', 'en'].includes(pref.get('lang')) ? pref.get('lang') : /^ko/i.test(navigator.language) ? 'ko' : 'en';
+const tr = (k, v) => LOCALES.t(lang, k, v);
+api.setLang?.(lang);
+const STATUS = { running: tr('ui.status.running'), done: tr('ui.status.done'), error: tr('ui.status.error'), stopped: tr('ui.status.stopped') };
+// index.html 고정 문구를 현재 언어로 덮어쓴다. 코드가 나중에 바꾸는 글자(접기 버튼 등)는 그 코드가 다시 쓴다.
+document.documentElement.lang = lang;
+document.querySelectorAll('[data-i18n]').forEach((e) => { e.textContent = tr(e.dataset.i18n); });
+document.querySelectorAll('[data-i18n-title]').forEach((e) => { e.title = tr(e.dataset.i18nTitle); });
+document.querySelectorAll('[data-i18n-aria]').forEach((e) => e.setAttribute('aria-label', tr(e.dataset.i18nAria)));
+document.querySelectorAll('[data-i18n-ph]').forEach((e) => { e.placeholder = tr(e.dataset.i18nPh); });
+// CSS ::before/::after 글자는 변수로 넘긴다
+document.documentElement.style.setProperty('--t-drop-cancel', JSON.stringify(tr('ui.import.dropCancel')));
+document.documentElement.style.setProperty('--t-perm', JSON.stringify(`${tr('ui.inbox.perm')} · `));
+// 터미널 글꼴 크기 10~20, 이상한 값은 기본 13
+const fontSize = (v = pref.get('fontSize')) => Math.min(20, Math.max(10, Math.round(Number(v)) || 13));
 
 // --- 보드 ---
 
@@ -55,6 +70,12 @@ function save() {
   syncRoster();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => api.saveBoard(boardData()), 300);
+}
+// 창을 닫기 직전용. 300ms 디바운스를 기다리면 마지막 변경(훅이 바꾼 sessionId 등)이 저장되지 않는다.
+function flushSave() {
+  save();
+  clearTimeout(saveTimer);
+  api.saveBoard(boardData());
 }
 
 // board.json 에 저장하는 내용. 프로젝트 색(groupColors)도 여기 들어가 재실행해도 유지된다.
@@ -97,7 +118,7 @@ function renderLinks(temp) {
     g.setAttribute('class', `link${live ? ' live' : ''}`);
     g.innerHTML = `<path class="hit" d="${d}"/><path class="cable" d="${d}"/><path class="pulse" d="${d}"/>`;
     const hit = g.querySelector('.hit');
-    hit.innerHTML = '<title>눌러서 협업 끊기</title>';
+    hit.innerHTML = `<title>${tr('ui.link.cut')}</title>`;
     hit.addEventListener('click', () => {
       links = links.filter((x) => x !== l);
       renderLinks();
@@ -125,10 +146,10 @@ function paintLinkStates() {
       .filter(Boolean);
     const b = n.el.querySelector('.link-state');
     b.classList.toggle('on', peers.length > 0);
-    b.querySelector('.link-label').textContent = peers.length ? `협업 ${peers.length}` : '+ 협업';
+    b.querySelector('.link-label').textContent = peers.length ? tr('ui.collab.count', { n: peers.length }) : tr('ui.collab.add');
     b.querySelector('.link-list').textContent = peers.length
-      ? `${peers.map((p) => `@${p.data.name}`).join('\n')}\n\n누르면 협업할 세션 고르기`
-      : '누르면 협업할 세션을 고릅니다.\n협업하는 세션끼리는 서로 일을 맡기고 답을 받습니다.';
+      ? `${peers.map((p) => `@${p.data.name}`).join('\n')}\n\n${tr('ui.collab.listHint')}`
+      : tr('ui.collab.none');
   }
 }
 
@@ -171,11 +192,11 @@ function renderCollab() {
     row.append(box, el('span', 'collab-name', `@${m.data.name}`), el('span', 'collab-meta', `${LABELS[m.data.command] ?? m.data.command}, ${basename(m.data.cwd)}`));
     return row;
   });
-  const pick = el('button', 'collab-pick', '보드에서 눌러 고르기');
+  const pick = el('button', 'collab-pick', tr('ui.collab.pick'));
   pick.addEventListener('click', () => { closeCollab(); startLinkMode(n); });
   $('collab-pop').replaceChildren(
-    el('div', 'collab-title', `@${n.data.name} 와 협업할 세션`),
-    ...(list.length ? list : [el('p', 'collab-none', '보드에 다른 세션이 없습니다. 세션을 하나 더 실행하세요.')]),
+    el('div', 'collab-title', tr('ui.collab.title', { name: n.data.name })),
+    ...(list.length ? list : [el('p', 'collab-none', tr('ui.collab.empty'))]),
     pick,
   );
 }
@@ -255,7 +276,7 @@ function renameSession(n) {
     const dup = [...nodes.values()].some((m) => m !== n && m.data.name.toLowerCase() === v.toLowerCase());
     if (keep && v && dup) {
       input.classList.add('bad');
-      input.title = '다른 세션이 이미 쓰는 이름입니다';
+      input.title = tr('ui.rename.dup');
       return false;
     }
     done = true;
@@ -355,11 +376,15 @@ function setFocused(n) {
   // 나를 기다리던 세션을 열어 보면 확인한 것으로 친다
   if (n.state === 'waiting') setState(n, n.waitKind === 'permission' ? 'working' : 'idle');
   if (focused === n) return;
-  // 파일 탭을 보고 있으면 고른 세션의 프로젝트 트리로 바꾼다
-  if (!$('sidebar').hidden && !$('side-files').hidden && n.data.cwd && n.data.cwd !== fx.root) openFiles(n.data.cwd);
+  // 다른 세션으로 옮길 때만 트리를 바꾼다. 같은 세션 터미널을 눌러도 [파일 보기]로 연 다른 폴더 트리는 그대로 둔다.
+  syncFilesTo(n);
   focused?.el.classList.remove('focused');
   focused = n;
   n.el.classList.add('focused');
+}
+// 파일 탭을 보고 있으면 그 세션의 프로젝트 트리로 바꾼다
+function syncFilesTo(n) {
+  if (!$('sidebar').hidden && !$('side-files').hidden && n.data.cwd && n.data.cwd !== fx.root) openFiles(n.data.cwd);
 }
 
 // --- 세션 상태: 빨강 = 일하는 중, 노랑 = 나를 기다림(답 옴·권한 요청), 초록 = 대기 ---
@@ -396,8 +421,8 @@ function inboxItem(n) {
   const tile = el('span', 'sess st-waiting');
   tile.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">${glyphOf(n.data.command)}</svg><i></i>`;
   li.append(tile, el('span', 'ib-name', n.data.name), el('span', 'ib-time', n.waitAt ? ago(n.waitAt) : ''));
-  li.title = `${n.waitKind === 'permission' ? '권한 요청' : '응답 옴'}${n.waitText ? `: ${n.waitText}` : ''}
-마우스를 올리면 잠깐 보고, 누르면 이동`;
+  li.title = `${tr(n.waitKind === 'permission' ? 'ui.inbox.perm' : 'ui.inbox.reply')}${n.waitText ? `: ${n.waitText}` : ''}
+${tr('ui.peekHint')}`;
   li.addEventListener('pointerenter', () => peekAt(n));
   li.addEventListener('click', () => enterSession(n));
   return li;
@@ -435,6 +460,7 @@ function enterSession(n) {
   peekAt(n);
   peekFrom = null;
   save();
+  syncFilesTo(n); // 이미 고른 세션이어도 트리가 다른 폴더로 바뀌어 있을 수 있어 직접 맞춘다
   setFocused(n);
   n.term.focus();
 }
@@ -484,7 +510,7 @@ function onHook(n, e) {
     case 'PreToolUse': if (!e.agent_id && n.state !== 'working') setState(n, 'working'); break;
     case 'Notification':
       n.waitAt = Date.now();
-      n.waitText = e.message || '권한을 묻고 있습니다';
+      n.waitText = e.message || tr('ui.inbox.asking');
       setState(n, 'waiting', 'permission');
       break;
     case 'Stop':
@@ -511,8 +537,8 @@ function renderTokens(n) {
   const u = n.data.usage;
   const t = n.el.querySelector('.tokens');
   if (!u) return (t.textContent = '');
-  t.textContent = `토큰 ${fmtTokens(u.input + u.output + u.cacheRead + u.cacheWrite)}`;
-  t.title = `입력 ${fmtTokens(u.input)}, 출력 ${fmtTokens(u.output)}, 캐시 읽기 ${fmtTokens(u.cacheRead)}, 캐시 쓰기 ${fmtTokens(u.cacheWrite)}`;
+  t.textContent = tr('ui.tokens.total', { n: fmtTokens(u.input + u.output + u.cacheRead + u.cacheWrite) });
+  t.title = tr('ui.tokens.detail', { input: fmtTokens(u.input), output: fmtTokens(u.output), cr: fmtTokens(u.cacheRead), cw: fmtTokens(u.cacheWrite) });
 }
 
 // --- 세션 창 위 픽셀 캐릭터(모든 세션, 귀여움용) ---
@@ -578,7 +604,7 @@ const ghostBoo = (t) => t % 12 >= 8;
 // frame(기분, 박자, 걷는 중) → [지도, 색], motion = 몸에 붙일 움직임, fx = 그 박자에 띄울 효과, look = 서서 좌우를 두리번
 const CRITTERS = {
   box: {
-    name: '프롬프트 박스',
+    name: tr('ui.critter.box'),
     frame(mood, t, walking) {
       if (mood === 'working') {
         const [l, r] = t % 40 > 32 ? (t % 80 > 40 ? ['o', 'o'] : ['^', '^']) : ['>', ' '];
@@ -592,13 +618,13 @@ const CRITTERS = {
     fx: { idle: (t) => t % 10 === 0 && ['zz', 'z', 62, 38] },
   },
   slime: {
-    name: '말랑 슬라임',
+    name: tr('ui.critter.slime'),
     frame: (mood) => [mood === 'done' ? SLIME.happy : mood === 'idle' || mood === 'exited' ? SLIME.droop : SLIME.normal, SLIME_PAL],
     motion: { working: 'hop', waiting: 'bigjump', done: 'wobble', idle: '' },
     fx: { idle: (t) => t % 8 === 0 && ['drop', '', 54, 26] },
   },
   chick: {
-    name: '병아리',
+    name: tr('ui.critter.chick'),
     frame: (mood, t, walking) => [chickRows(mood === 'done' ? 'happy' : mood === 'idle' || mood === 'exited' ? 'sleep' : 'open', walking && t % 2), CHICK_PAL],
     motion: { working: '', waiting: 'hop', done: 'hop', idle: '' },
     fx: {
@@ -608,7 +634,7 @@ const CRITTERS = {
     look: { waiting: true },
   },
   ghost: {
-    name: '꼬마 유령',
+    name: tr('ui.critter.ghost'),
     frame(mood, t) {
       if (mood === 'waiting' && ghostBoo(t)) return [GHOST.boo, GHOST_PAL];
       if (mood === 'done') return [GHOST.happy, GHOST_PAL];
@@ -617,7 +643,7 @@ const CRITTERS = {
     },
     motion: { working: 'float', waiting: (t) => (ghostBoo(t) ? 'boo' : 'float'), done: 'float', idle: 'ghosty' },
     fx: {
-      waiting: (t) => t % 12 === 8 && ['bubble', '왁!', 52, 52],
+      waiting: (t) => t % 12 === 8 && ['bubble', tr('ui.critter.boo'), 52, 52],
       done: (t) => t % 3 === 0 && ['spark', '✦', Math.random() * 60, 30 + Math.random() * 20],
       idle: (t) => t % 10 === 0 && ['zz', 'z', 60, 46],
     },
@@ -706,16 +732,16 @@ async function addNode(data) {
   if (data.command === 'claude') data.sessionId ??= crypto.randomUUID();
   data.name ??= uniqueName(basename(data.cwd));
   const node = el('div', 'node');
-  node.innerHTML = `<div class="head"><span class="agent"></span><span class="where"></span><span class="copied">복사함</span><span class="tokens"></span><span class="ended">종료됨</span><button class="restart">다시 실행</button><button class="files-btn icon-btn" title="이 세션 폴더의 파일 보기" aria-label="파일 보기"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="close" aria-label="터미널 닫기">×</button><button class="link-state"><span class="link-label"></span><span class="link-list"></span></button></div><div class="body"></div>${['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].map((d) => `<div class="rz rz-${d}" data-dir="${d}"></div>`).join('')}<div class="port" title="끌어서 다른 세션에 놓으면 협업(서로 일 맡기기)으로 연결됩니다"></div>${critterHtml(pickCritter())}`;
+  node.innerHTML = `<div class="head"><span class="agent"></span><span class="where"></span><span class="copied">${tr('ui.node.copied')}</span><span class="tokens"></span><span class="ended">${tr('ui.node.ended')}</span><button class="restart">${tr('ui.node.restart')}</button><button class="files-btn icon-btn" title="${tr('ui.node.filesTitle')}" aria-label="${tr('ui.node.files')}"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="close" aria-label="${tr('ui.node.close')}">×</button><button class="link-state"><span class="link-label"></span><span class="link-list"></span></button></div><div class="body"></div>${['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].map((d) => `<div class="rz rz-${d}" data-dir="${d}"></div>`).join('')}<div class="port" title="${tr('ui.node.port')}"></div>${critterHtml(pickCritter())}`;
   node.querySelector('.agent').textContent = LABELS[data.command] ?? data.command;
   node.querySelector('.where').textContent = data.name;
-  node.querySelector('.where').title = `${data.cwd || '홈 폴더'}\n더블클릭해서 세션 이름 바꾸기`;
+  node.querySelector('.where').title = `${data.cwd || tr('ui.home')}\n${tr('ui.node.renameHint')}`;
   node.querySelector('.where').addEventListener('dblclick', () => renameSession(n));
   boardEl.appendChild(node);
 
   const term = new Term({
     fontFamily: 'Cascadia Mono, Consolas, Menlo, monospace',
-    fontSize: 13,
+    fontSize: fontSize(),
     // ConPTY 뒤라는 걸 알려야 크기를 바꿀 때 xterm 이 ConPTY 와 다르게 줄을 다시 감지 않는다(글자 어긋남·선택 위치 틀어짐 방지)
     ...(isMac ? { macOptionClickForcesSelection: true } : { windowsPty: { backend: 'conpty', buildNumber: winBuild } }),
     theme: { background: '#1b1d23', foreground: '#e6e8ec', cursor: '#f0c94a', selectionBackground: '#ffffff26' },
@@ -866,6 +892,17 @@ async function addNode(data) {
     api.writeKeys(data.id, [...'\x05\x15\x7f'.repeat(20)], 6);
   };
   term.attachCustomKeyEventHandler((e) => {
+    // Space: 톡 누르면 공백, 꾹 누르면(반복 keydown) 이동 모드. 공백은 keyup·다음 키 직전에 보내 순서를 지킨다. 한글 조합 중(229)은 건드리지 않는다.
+    if (e.code === 'Space' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+      if (e.type === 'keydown') {
+        if (!e.repeat) { flushSpace(); spacePend = () => term.input(' '); }
+        else if (spacePend) { spacePend = null; if (tool !== 'hand') { spaceHand = true; setTool('hand', true); } }
+        else if (!spaceHand) return true; // 이미 공백을 보낸 뒤의 반복(다른 키가 끼었을 때)은 예전처럼 공백
+        e.preventDefault(); // keypress·input 으로 공백이 새지 않게
+      } else if (e.type === 'keyup') flushSpace();
+      return false;
+    }
+    if (e.type === 'keydown') flushSpace();
     if (e.key === 'Backspace' && (isMac ? e.metaKey && !e.ctrlKey : e.altKey && !e.ctrlKey && !e.metaKey)) {
       if (e.type === 'keydown') {
         e.preventDefault();
@@ -923,7 +960,7 @@ async function addNode(data) {
   node.querySelector('.restart').addEventListener('click', () => {
     n.exited = false;
     node.classList.remove('exited');
-    term.write('\r\n\x1b[90m[다시 실행]\x1b[0m\r\n');
+    term.write(`\r\n\x1b[90m[${tr('ui.node.restart')}]\x1b[0m\r\n`);
     setState(n, null);
     start();
   });
@@ -993,13 +1030,15 @@ const pan = (dx, dy) => {
 };
 addEventListener('pointerup', () => document.body.classList.remove('panning'));
 
-// 선택(V) 모드 빈 곳 클릭 = 선택 해제. 보드 이동은 H 모드·휠 버튼 드래그·휠로만 한다.
+// 선택(V) 모드 빈 곳 클릭 = 선택 해제. 보드 이동은 H 모드·휠 버튼 드래그·휠로 한다 (멀리 보기는 빈 곳 끌기도).
 viewport.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
   if (e.target !== viewport && e.target !== boardEl && !e.target.closest('.group-frame, .group-cover')) return;
   document.activeElement?.blur(); // 터미널 포커스를 풀어야 H/V 단축키가 터미널로 가지 않는다
   if (linkFrom) return endLinkMode();
   if (selection.size) setSelection([]);
+  // 멀리 보기에선 빈 곳 끌기도 보드 이동 (덮개 끌기는 dragGroup 이 맡는다)
+  if (boardEl.classList.contains('far') && !e.target.closest('.group-cover')) drag(e, pan);
 });
 
 // 연결 모드에서 세션 클릭 = 연결 / Ctrl+세션 클릭 = 고르기·빼기. 터미널로 클릭이 가지 않게 캡처 단계에서 막는다.
@@ -1032,7 +1071,7 @@ boardEl.prepend(groupsEl);
 
 // 세션이 속한 프로젝트 = 워크트리면 원래 저장소, 아니면 그 폴더
 function projectOf(n) {
-  if (!n.data.cwd) return { key: '', name: '홈 폴더' };
+  if (!n.data.cwd) return { key: '', name: tr('ui.home') };
   const root = folders.find((x) => samePath(x.path, n.data.cwd))?.worktreeOf || n.data.cwd;
   return { key: root.replace(/[\\/]+$/, '').toLowerCase(), name: basename(root) };
 }
@@ -1041,8 +1080,8 @@ function projectOf(n) {
 let groupColors = {}; // 프로젝트 key -> hue
 const DEFAULT_HUES = [205, 250, 280, 185, 225, 310];
 const PALETTE = [
-  [210, '파랑'], [235, '남색'], [265, '보라'], [295, '자주'], [325, '분홍'],
-  [185, '청록'], [160, '민트'], [95, '연두'], [40, '주황'], [0, '빨강'],
+  [210, tr('ui.color.blue')], [235, tr('ui.color.navy')], [265, tr('ui.color.violet')], [295, tr('ui.color.purple')], [325, tr('ui.color.pink')],
+  [185, tr('ui.color.teal')], [160, tr('ui.color.mint')], [95, tr('ui.color.lime')], [40, tr('ui.color.orange')], [0, tr('ui.color.red')],
 ];
 function groupHue(key, name) {
   if (groupColors[key] != null) return groupColors[key];
@@ -1064,13 +1103,22 @@ function openColorPicker(key, anchor) {
     b.addEventListener('click', () => { groupColors[key] = hue; closeColorPicker(); renderGroups(); save(); });
     return b;
   });
-  const reset = el('button', 'swatch-reset', '기본색');
+  const reset = el('button', 'swatch-reset', tr('ui.color.reset'));
   reset.addEventListener('click', () => { delete groupColors[key]; closeColorPicker(); renderGroups(); save(); });
   pop.replaceChildren(...swatches, reset);
   pop.hidden = false;
 }
 function closeColorPicker() { $('color-pop').hidden = true; }
 addEventListener('pointerdown', (e) => { if (!$('color-pop').hidden && !e.target.closest('#color-pop, .group-label')) closeColorPicker(); }, true);
+
+// 프로젝트 세션 전체를 끌어 옮긴다. 움직이지 않고 놓으면 onClick. 놓을 때 drag() 가 저장한다.
+function dragGroup(e, list, onClick) {
+  let moved = false;
+  drag(e, (dx, dy) => {
+    moved = true;
+    for (const n of list) { n.data.x += dx / view.scale; n.data.y += dy / view.scale; place(n); }
+  }, () => { if (!moved) onClick?.(); });
+}
 
 function renderGroups() {
   const byProject = new Map();
@@ -1094,32 +1142,30 @@ function renderGroups() {
     Object.assign(cover.style, { left: `${x}px`, top: `${y}px`, width: `${r - x}px`, height: `${b - y}px` });
     cover.style.setProperty('--hue', hue);
     cover.append(el('span', 'cover-name', name));
+    // 덮개 끌기 = 프로젝트 세션 전체 이동. 이동(H) 모드도 같다 (viewport 캡처가 덮개는 넘겨 준다).
+    cover.addEventListener('pointerdown', (e) => { if (e.button === 0) dragGroup(e, list); });
     covers.push(cover);
     const frame = el('div', 'group-frame');
     Object.assign(frame.style, { left: `${x}px`, top: `${y}px`, width: `${r - x}px`, height: `${b - y}px` });
     frame.style.setProperty('--hue', hue);
-    const label = el('button', 'group-label', `${name}, 세션 ${list.length}개`);
-    label.title = '끌면 이 프로젝트 세션이 함께 움직입니다. 누르면 색 바꾸기';
+    const label = el('button', 'group-label', tr('ui.group.label', { name, n: list.length }));
+    label.title = tr('ui.group.labelTitle');
     // 끌기 = 프로젝트 세션 전체 이동, 그냥 누르기 = 색 고르기
     label.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       e.stopPropagation(); // 보드 이동으로 가지 않게
-      let moved = false;
-      drag(e, (dx, dy) => {
-        moved = true;
-        for (const n of list) { n.data.x += dx / view.scale; n.data.y += dy / view.scale; place(n); }
-      }, () => { if (!moved) openColorPicker(key, label); });
+      dragGroup(e, list, () => openColorPicker(key, label));
     });
     const add = el('button', 'group-add', '+');
-    add.title = `${name}: 새 세션 또는 세션 가져오기`;
+    add.title = tr('ui.group.addTitle', { name });
     add.setAttribute('aria-label', add.title);
     add.setAttribute('aria-haspopup', 'menu');
     add.addEventListener('pointerdown', (e) => e.stopPropagation());
     add.addEventListener('click', () => (groupMenuFor === key ? closeGroupMenu() : openGroupMenu(key, name, list, add)));
     const tag = el('div', 'group-tag');
     tag.append(label, add);
-    const kill = el('button', 'group-close', '전체 종료');
-    kill.title = `${name} 의 세션 ${list.length}개 모두 종료`;
+    const kill = el('button', 'group-close', tr('ui.group.closeAll'));
+    kill.title = tr('ui.group.closeAllTitle', { name, n: list.length });
     kill.addEventListener('pointerdown', (e) => e.stopPropagation());
     kill.addEventListener('click', () => closeGroup(name, list));
     frame.append(tag, kill);
@@ -1129,7 +1175,7 @@ function renderGroups() {
   coversEl.replaceChildren(...covers);
 }
 
-// 덮개 층은 세션들 위(노드 z-index 보다 높게). 클릭은 통과시켜 그 위에서 끌어도 보드가 움직인다.
+// 덮개 층은 세션들 위(노드 z-index 보다 높게). 층 자체는 클릭을 통과시키고, 멀리 보기의 덮개만 받는다.
 const coversEl = el('div');
 coversEl.id = 'covers';
 boardEl.append(coversEl);
@@ -1148,7 +1194,7 @@ function setTool(t, quiet) {
   if (!changed || quiet) return;
   const hud = $('mode-hud');
   hud.querySelector('kbd').textContent = t === 'hand' ? 'H' : 'V';
-  hud.querySelector('span').textContent = t === 'hand' ? '이동 모드' : '선택 모드';
+  hud.querySelector('span').textContent = tr(t === 'hand' ? 'ui.mode.hand' : 'ui.mode.select');
   hud.classList.remove('show');
   void hud.offsetWidth; // 연달아 바꿔도 처음부터 다시 보이게
   hud.classList.add('show');
@@ -1157,6 +1203,7 @@ function setTool(t, quiet) {
 }
 viewport.addEventListener('pointerdown', (e) => {
   if (tool !== 'hand' || e.target.closest('#corner, #cast, #keys')) return;
+  if (boardEl.classList.contains('far') && e.target.closest('.group-cover')) return; // 멀리 보기 덮개 끌기는 V 와 같이 dragGroup 이 맡는다
   e.stopImmediatePropagation(); // 같은 viewport 의 선택(사각형) 리스너까지 막는다
   document.activeElement?.blur();
   drag(e, pan); // pointerdown 기본 동작을 막아 xterm 의 mousedown(텍스트 선택)도 생기지 않는다
@@ -1167,8 +1214,12 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyH') setTool('hand');
   else if (e.code === 'KeyV') setTool('select');
 });
-// Space 를 누르고 있는 동안만 이동 모드 (피그마처럼). 터미널·입력칸에선 그대로 공백을 친다.
+// Space 를 누르고 있는 동안만 이동 모드 (피그마처럼). 입력칸에선 그대로 공백, 터미널은 꾹 누를 때만 이동(attachCustomKeyEventHandler).
 let spaceHand = false;
+// 터미널에서 눌렀지만 아직 안 보낸 공백. 포커스가 빠져도 버리지 않고 보낸다(짧게 누른 공백 유실 방지).
+let spacePend = null;
+const flushSpace = () => { const f = spacePend; spacePend = null; f?.(); };
+addEventListener('focusout', flushSpace, true);
 addEventListener('keydown', (e) => {
   if (e.code !== 'Space' || e.ctrlKey || e.altKey || e.metaKey || e.target.closest?.('input, textarea, select, .xterm')) return;
   e.preventDefault(); // 포커스 남은 버튼이 눌리지 않게
@@ -1184,7 +1235,7 @@ $('tool-select').addEventListener('click', () => setTool('select'));
 const setKeysOpen = (open) => {
   $('keys-list').hidden = !open;
   $('keys-toggle').setAttribute('aria-expanded', open);
-  $('keys-toggle').textContent = open ? '단축키 접기' : '단축키';
+  $('keys-toggle').textContent = tr(open ? 'ui.keys.collapse' : 'ui.keys.title');
   try { localStorage.setItem('keysOpen', open ? '1' : '0'); } catch {}
 };
 try { setKeysOpen(localStorage.getItem('keysOpen') !== '0'); } catch { setKeysOpen(true); }
@@ -1192,6 +1243,8 @@ $('keys-toggle').addEventListener('click', () => setKeysOpen($('keys-list').hidd
 // Claude 사용량은 공개되지 않은 API 를 로그인 토큰으로 부른다 — 사용자가 켰을 때만 묻는다.
 let claudeUsageOn = pref.get('claudeUsage', '0') === '1';
 $('opt-claude-usage').checked = claudeUsageOn;
+// 설명 괄호는 둘째 줄로 내린다 (키 하나를 첫 ' (' 에서 나눈다 — ko·en 같은 꼴)
+{ const s = $('opt-claude-usage').nextElementSibling, t = s.textContent, i = t.indexOf(' ('); if (i > 0) s.replaceChildren(t.slice(0, i), el('span', 'opt-sub', t.slice(i + 1))); }
 $('opt-claude-usage').addEventListener('change', (e) => {
   claudeUsageOn = e.target.checked;
   pref.set('claudeUsage', claudeUsageOn ? '1' : '0');
@@ -1204,7 +1257,7 @@ $('opt-critters').addEventListener('change', (e) => {
   document.body.classList.toggle('no-critters', !crittersOn);
 });
 // 캐릭터 고르기: 무작위(세션마다) 또는 하나로 고정. 바꾸면 지금 떠 있는 캐릭터도 바로 바꾼다.
-$('opt-critter-kind').replaceChildren(el('option', null, '무작위'), ...CRITTER_KINDS.map((k) => Object.assign(el('option', null, CRITTERS[k].name), { value: k })));
+$('opt-critter-kind').replaceChildren(el('option', null, tr('ui.critter.random')), ...CRITTER_KINDS.map((k) => Object.assign(el('option', null, CRITTERS[k].name), { value: k })));
 $('opt-critter-kind').firstChild.value = 'random';
 $('opt-critter-kind').value = critterKind;
 $('opt-critter-kind').addEventListener('change', (e) => {
@@ -1275,7 +1328,7 @@ const sameAgent = (a, b) => String(a).replace(/^agent-/, '') === String(b).repla
 
 function elapsed(a) {
   const s = Math.floor(((a.end ?? Date.now()) - a.start) / 1000);
-  return s < 60 ? `${s}초` : `${Math.floor(s / 60)}분 ${s % 60}초`;
+  return s < 60 ? tr('ui.time.sec', { s }) : tr('ui.time.minSec', { m: Math.floor(s / 60), s: s % 60 });
 }
 
 function finish(a, status, result, stats) {
@@ -1370,11 +1423,11 @@ function renderCardHead(c) {
   box.className = `agent-card ${a.status}`;
   box.querySelector('.ac-title').textContent = a.description;
   box.querySelector('.ac-meta').textContent = `${a.type}, ${a.status === 'running'
-    ? (a.stopRequested ? '중지 요청됨, 다음 도구 호출에서 멈춥니다' : `도구 ${a.tools}회${a.lastTool ? `, 지금 ${a.lastTool}` : ''}`)
-    : `${STATUS[a.status]}, 도구 ${a.tools}회`}`;
+    ? (a.stopRequested ? tr('ui.agent.stopping') : a.lastTool ? tr('ui.agent.toolsNow', { n: a.tools, tool: a.lastTool }) : tr('ui.agent.tools', { n: a.tools }))
+    : `${STATUS[a.status]}, ${tr('ui.agent.tools', { n: a.tools })}`}`;
   a.timeEl.textContent = elapsed(a);
   const x = box.querySelector('.sub-x');
-  x.title = a.status !== 'running' ? '카드 지우기' : a.agentId ? '이 서브 에이전트 중지' : '아직 연결 중이라 중지할 수 없습니다';
+  x.title = tr(a.status !== 'running' ? 'ui.agent.clear' : a.agentId ? 'ui.agent.stop' : 'ui.agent.noStop');
   x.setAttribute('aria-label', x.title);
   x.disabled = a.status === 'running' && (!a.agentId || a.stopRequested);
 }
@@ -1400,7 +1453,7 @@ async function loadCard(c) {
     if (m.role === 'tool') item.append(el('span', 'msg-tool', m.name));
     item.append(el('div', 'msg-text', m.text));
     if (m.role === 'tool' || m.role === 'result') {
-      item.title = '눌러서 전체 보기';
+      item.title = tr('ui.agent.expand');
       item.addEventListener('click', () => (item.classList.toggle('open') ? c.open.add(i) : c.open.delete(i)));
     }
     return item;
@@ -1429,7 +1482,7 @@ function renderRack(n) {
   if (!n.rack) {
     n.el.insertAdjacentHTML('beforeend',
       '<svg class="wire"><path class="cable"/><path class="pulse"/><circle class="plug plug-a" r="5"/><circle class="plug plug-b" r="5"/></svg>'
-      + '<section class="rack"><div class="rack-head"><span class="rack-title">서브 에이전트</span><span class="rack-count"></span><button class="rack-mode" role="switch">간략히<i></i></button><button class="rack-clear">끝난 카드 지우기</button></div><div class="rack-list"></div></section>');
+      + `<section class="rack"><div class="rack-head"><span class="rack-title">${tr('ui.rack.title')}</span><span class="rack-count"></span><button class="rack-mode" role="switch">${tr('ui.rack.brief')}<i></i></button><button class="rack-clear">${tr('ui.rack.clear')}</button></div><div class="rack-list"></div></section>`);
     n.rack = n.el.querySelector('.rack');
     n.rack.querySelector('.rack-mode').addEventListener('click', () => setRackBrief(!rackBrief));
     n.rack.querySelector('.rack-clear').addEventListener('click', () => {
@@ -1439,7 +1492,7 @@ function renderRack(n) {
     place(n);
   }
   const running = list.filter((a) => a.status === 'running').length;
-  n.rack.querySelector('.rack-count').textContent = running ? `${running}개 실행 중` : `${list.length}개 끝남`;
+  n.rack.querySelector('.rack-count').textContent = running ? tr('ui.rack.running', { n: running }) : tr('ui.rack.done', { n: list.length });
   n.rack.querySelector('.rack-mode').setAttribute('aria-checked', rackBrief);
   n.el.classList.toggle('busy', running > 0);
   const row = n.rack.querySelector('.rack-list');
@@ -1470,7 +1523,7 @@ function onAgentEvent(n, e) {
         const input = e.tool_input || {};
         agents.set(e.tool_use_id, {
           key: e.tool_use_id,
-          description: input.description || '설명 없는 작업',
+          description: input.description || tr('ui.agent.noDesc'),
           type: input.subagent_type || 'general-purpose',
           prompt: input.prompt || '',
           status: 'running',
@@ -1534,7 +1587,7 @@ api.onData((id, d) => nodes.get(id)?.term.write(d));
 api.onExit((id, code) => {
   const n = nodes.get(id);
   if (!n) return;
-  n.term.write(`\r\n\x1b[90m[종료됨: ${code}]\x1b[0m\r\n`);
+  n.term.write(`\r\n\x1b[90m[${tr('ui.node.exitedCode', { code })}]\x1b[0m\r\n`);
   n.el.classList.add('exited');
   n.exited = true;
   paintState(n);
@@ -1617,7 +1670,15 @@ const untilText = (iso) => {
   if (!iso) return '';
   const min = Math.max(0, Math.round((new Date(iso) - Date.now()) / 60000));
   const d = Math.floor(min / 1440), h = Math.floor((min % 1440) / 60), m = min % 60;
-  return `${d ? `${d}일 ` : ''}${h ? `${h}시간 ` : ''}${d ? '' : `${m}분 `}후 초기화`;
+  return tr('ui.time.resetIn', { t: [d && tr('ui.time.days', { n: d }), h && tr('ui.time.hours', { n: h }), !d && tr('ui.time.mins', { n: m })].filter(Boolean).join(' ') });
+};
+// getUsage 의 label 은 한국어 키('5시간'·'주간'·'주간 Opus' 등)라 비교는 그대로 하고 보여 줄 때만 번역한다
+const limitLabel = (s) => {
+  let m;
+  if ((m = /^(\d+)시간$/.exec(s))) return tr('ui.usage.hours', { n: m[1] });
+  if (s === '주간') return tr('ui.usage.week');
+  if ((m = /^주간 (.+)$/.exec(s))) return tr('ui.usage.weekModel', { model: m[1] });
+  return s;
 };
 function showUsage(btn, agent) {
   clearTimeout(usageTimer);
@@ -1626,13 +1687,13 @@ function showUsage(btn, agent) {
     const box = $('usage-pop');
     const r = btn.getBoundingClientRect();
     Object.assign(box.style, { left: `${r.left}px`, top: `${r.bottom + 8}px` });
-    box.replaceChildren(el('div', 'u-title', LABELS[agent]), el('p', 'u-note', '불러오는 중…'));
+    box.replaceChildren(el('div', 'u-title', LABELS[agent]), el('p', 'u-note', tr('ui.loading')));
     box.hidden = false;
     const u = agent === 'claude' && !claudeUsageOn
-      ? { error: '꺼져 있습니다. 오른쪽 위 [단축키] 패널에서 "Claude 남은 사용량 보기" 를 켜면 보입니다.' }
+      ? { error: tr('ui.settings.usageOff') }
       : await api.getUsage(agent);
     if (usageFor !== agent || box.hidden) return;
-    const parts = [el('div', 'u-title', `${LABELS[agent]}${u.plan ? ` (${u.plan} 요금제)` : ''}`)];
+    const parts = [el('div', 'u-title', `${LABELS[agent]}${u.plan ? ` (${tr('ui.usage.plan', { plan: u.plan })})` : ''}`)];
     if (u.error) parts.push(el('p', 'u-note', u.error));
     for (const l of u.limits ?? []) {
       const left = Math.max(0, 100 - l.used);
@@ -1640,7 +1701,7 @@ function showUsage(btn, agent) {
       const bar = el('div', 'u-bar');
       bar.append(el('i'));
       bar.firstChild.style.width = `${Math.min(100, l.used)}%`;
-      row.append(el('span', 'u-label', l.label), el('span', 'u-left', `${Math.round(left)}% 남음`), bar, el('span', 'u-reset', untilText(l.resetsAt)));
+      row.append(el('span', 'u-label', limitLabel(l.label)), el('span', 'u-left', tr('ui.usage.left', { n: Math.round(left) })), bar, el('span', 'u-reset', untilText(l.resetsAt)));
       parts.push(row);
     }
     if (u.note) parts.push(el('p', 'u-note', u.note));
@@ -1663,11 +1724,11 @@ async function detectAgents() {
 $('agents-refresh').addEventListener('click', (e) => withSpin(e.currentTarget, async () => {
   await detectAgents();
   const names = AGENTS.filter(([c]) => installed.includes(c)).map(([, label]) => label);
-  return `AI CLI 최신화 완료: ${names.length ? names.join(', ') : '설치된 AI 를 찾지 못했습니다'}`;
+  return tr('ui.agents.refreshed', { list: names.length ? names.join(', ') : tr('ui.agents.none') });
 }));
 
 // 새로고침 버튼: 도는 동안 잠그고, 끝나면 입력창 위에 짧은 알림. 너무 빨리 끝나도 도는 게 보이게 최소 0.5초.
-async function withSpin(btn, work, failPrefix = '새로 고치지 못했습니다') {
+async function withSpin(btn, work, failPrefix = tr('ui.refreshFail')) {
   if (btn.classList.contains('spinning')) return;
   btn.classList.add('spinning');
   btn.disabled = true;
@@ -1700,11 +1761,11 @@ addEventListener('focus', () => { if (Date.now() - lastDetect > 10000) detectAge
 // 저장소 아래에 그 워크트리를 붙여 계층으로 보여준다.
 function orderedFolders() {
   const roots = folders.filter((f) => !f.worktreeOf);
-  const out = [{ path: '', name: '홈 폴더', tag: '' }];
+  const out = [{ path: '', name: tr('ui.home'), tag: '' }];
   const add = (f, child) => out.push({
     path: f.path,
     name: basename(f.path),
-    tag: [f.branch, child ? '워크트리' : (f.trusted ? null : '신뢰 안 됨')].filter(Boolean).join(', '),
+    tag: [f.branch, child ? tr('ui.folder.worktree') : (f.trusted ? null : tr('ui.folder.untrusted'))].filter(Boolean).join(', '),
     untrusted: !child && !f.trusted,
     child,
   });
@@ -1720,15 +1781,15 @@ function renderFolderList() {
   const q = $('folder-search').value.trim();
   const ql = q.toLowerCase();
   shown = orderedFolders().filter((f) => !q || f.name.toLowerCase().includes(ql) || f.path.toLowerCase().includes(ql));
-  if (/^([a-z]:)?[\\/]/i.test(q) && !shown.some((f) => f.path.toLowerCase() === ql)) shown.unshift({ path: q, name: '이 경로 사용', tag: '' });
+  if (/^([a-z]:)?[\\/]/i.test(q) && !shown.some((f) => f.path.toLowerCase() === ql)) shown.unshift({ path: q, name: tr('ui.folder.usePath'), tag: '' });
   active = Math.min(active, Math.max(0, shown.length - 1));
   const list = $('folder-list');
-  if (!shown.length) return list.replaceChildren(el('li', 'none', '맞는 폴더가 없습니다. 전체 경로를 붙여넣어 보세요.'));
+  if (!shown.length) return list.replaceChildren(el('li', 'none', tr('ui.folder.none')));
   list.replaceChildren(...shown.map((f, i) => {
     const li = el('li', f.child ? 'child' : '');
     li.setAttribute('role', 'option');
     li.setAttribute('aria-selected', i === active);
-    li.append(el('span', 'name', f.name), el('span', 'tag', f.tag), el('span', 'path', f.path || '사용자 홈 디렉터리'));
+    li.append(el('span', 'name', f.name), el('span', 'tag', f.tag), el('span', 'path', f.path || tr('ui.folder.homeDir')));
     li.addEventListener('pointerdown', (e) => { e.preventDefault(); launchFrom(f); });
     li.addEventListener('pointerenter', () => { active = i; renderFolderList(); });
     return li;
@@ -1791,7 +1852,7 @@ $('folder-browse').addEventListener('click', async () => {
 });
 // --- 확인 창 (앱 안): 앱 종료, 프로젝트 세션 전체 종료 등 되돌릴 수 없는 동작 앞에 띄운다 ---
 let confirmDone = null;
-function confirmBox(title, text, okLabel = '종료') {
+function confirmBox(title, text, okLabel = tr('ui.quit.ok')) {
   confirmDone?.(false);
   $('quit-title').textContent = title;
   $('quit-text').textContent = text;
@@ -1814,21 +1875,22 @@ $('quit-pop').addEventListener('pointerdown', (e) => { if (e.target === $('quit-
 // X·Cmd+Q 를 누르면 메인이 묻는다
 api.onConfirmClose(async (running) => {
   const unsaved = docs.filter((d) => d.dirty).length;
-  const ok = await confirmBox('종료 확인', `종료할까요?\n세션은 종료되지 않고 다음에 켜면 이어서 열립니다.${unsaved ? `\n저장하지 않은 파일 ${unsaved}개의 고친 내용은 사라집니다.` : ''}`);
+  const ok = await confirmBox(tr('ui.quit.title'), `${tr('ui.quit.text')}${unsaved ? `\n${tr('ui.quit.unsaved', { n: unsaved })}` : ''}`);
   if (!ok) return;
-  save();
+  flushSave();
   api.closeApp();
 });
 
 // 프로젝트 테두리 오른쪽 위 [전체 종료]
 async function closeGroup(name, list) {
-  const ok = await confirmBox('세션 전체 종료', `${name} 의 세션 ${list.length}개를 모두 종료할까요?\n터미널이 닫히고 보드에서 사라집니다. 대화 기록은 남아 있어 세션 가져오기로 다시 열 수 있습니다.`, '전체 종료');
+  const ok = await confirmBox(tr('ui.group.closeTitle'), tr('ui.group.closeText', { name, n: list.length }), tr('ui.group.closeAll'));
   if (ok) list.forEach((n) => nodes.has(n.data.id) && n.el.querySelector('.close').click());
 }
 
 // --- 버전·업데이트: 헤더 버전 글자를 누르면 바로 확인. 새 버전이 오면 위쪽 막대로 알린다 ---
 api.appVersion().then((v) => {
   $('app-version').textContent = `v${v}`;
+  $('set-version').textContent = `v${v}`;
   if (firstRun) pref.set('newsSeen', v);
   if (pref.get('newsSeen', '') !== v && CHANGES.some((c) => c.v === v)) openNews(v);
 });
@@ -1836,6 +1898,14 @@ api.appVersion().then((v) => {
 // 업데이트 뒤 처음 켜면 바뀐 점 목록. "닫기" 는 다음에 켤 때 또 뜨고, "다시 보지 않기" 는 이 버전에서 다시 안 뜬다.
 // 버전을 올릴 때 맨 위에 한 덩어리 추가한다.
 const CHANGES = [
+  { v: '1.1.0', items: [
+    { ko: '영어를 지원합니다. 처음엔 OS 언어를 따르고, 설정에서 한국어/영어를 고를 수 있습니다.', en: 'English is now supported. Bimo follows your OS language at first, and you can switch between Korean and English in Settings.' },
+    { ko: '오른쪽 위 톱니에 설정 창이 생겼습니다: 언어, 캐릭터, 사용량 보기, 터미널 글꼴 크기, 업데이트 확인.', en: 'New Settings window (gear, top right): language, characters, usage display, terminal font size, and update check.' },
+    { ko: '보드 저장이 더 안전해졌습니다. 저장 파일이 깨져도 자동으로 복구합니다.', en: 'Saving the board is safer. A broken save file is repaired automatically.' },
+    { ko: '파일 트리가 지금 고른 세션의 폴더를 따라갑니다.', en: 'The file tree now follows the folder of the selected session.' },
+    { ko: '멀리 볼 때(30% 이하) 프로젝트 판을 끌면 그 프로젝트 세션이 통째로 옮겨집니다.', en: 'When zoomed out (30% or less), drag a project panel to move all of its sessions at once.' },
+    { ko: 'Codex 세션도 케이블 협업을 합니다: 다른 세션에 말을 걸 수 있고, 받은 요청의 답도 돌려줍니다.', en: 'Codex sessions now join cable collaboration: they can message linked sessions and send replies back.' },
+  ] },
   { v: '1.0.0', items: [
     '이름이 Bimo 로 바뀌고 새 아이콘(B + 커서)이 생겼습니다.',
     'GitHub 에 공개했습니다. 업데이트도 GitHub Releases 에서 받습니다.',
@@ -1905,7 +1975,7 @@ function openNews(v) {
   newsShown = CHANGES.slice(CHANGES.findIndex((c) => c.v === v));
   $('news-track').replaceChildren(...newsShown.map((c) => {
     const ul = el('ul');
-    ul.append(...c.items.map((t) => el('li', null, t)));
+    ul.append(...c.items.map((t) => el('li', null, typeof t === 'string' ? t : t[lang] ?? t.ko))); // 1.1.0 부터 { ko, en }, 이전 기록은 원문
     const sec = el('section');
     sec.append(ul);
     return sec;
@@ -1923,7 +1993,7 @@ function openNews(v) {
 function showNews(i) {
   newsAt = Math.max(0, Math.min(newsShown.length - 1, i));
   const c = newsShown[newsAt];
-  $('news-title').textContent = `v${c.v} 에서 바뀐 점`;
+  $('news-title').textContent = tr('ui.news.title', { v: c.v });
   $('news-track').style.transform = `translateX(${-100 * newsAt}%)`;
   $('news-prev').disabled = newsAt === 0;
   $('news-next').disabled = newsAt === newsShown.length - 1;
@@ -1949,20 +2019,69 @@ function showUpdateBar(text, label, action) {
   updateAction = action;
   $('update-bar').hidden = false;
 }
-api.onUpdateReady((v) => showUpdateBar(`새 버전 v${v} 이 준비됐습니다. 다시 시작하면 적용됩니다.`, '다시 시작', () => { save(); api.installUpdate(); }));
-api.onUpdateManual(({ version, url }) => showUpdateBar(`새 버전 v${version} 이 나왔습니다. 받아서 응용 프로그램 폴더에 덮어 설치하세요.`, '받기', () => api.openUpdate(url)));
+api.onUpdateReady((v) => showUpdateBar(tr('ui.update.ready', { v }), tr('ui.update.restart'), () => { flushSave(); api.installUpdate(); }));
+api.onUpdateManual(({ version, url }) => showUpdateBar(tr('ui.update.manual', { v: version }), tr('ui.update.get'), () => api.openUpdate(url)));
 $('update-go').addEventListener('click', () => updateAction?.());
 $('update-later').addEventListener('click', () => { $('update-bar').hidden = true; });
 // 버전 글자: 바뀐 점 창을 열고, 같이 업데이트도 확인해 결과를 알린다(0.2.3 에서 빠졌던 확인을 되살림)
+// 업데이트 확인 결과 문구. 버전 글자와 설정 창이 같이 쓴다. 확인 못 하면 throw.
+async function updateMessage() {
+  const r = await api.checkUpdate();
+  if (r.status === 'latest') return tr('ui.update.latest', { v: r.version });
+  if (r.status === 'downloading') return tr('ui.update.downloading', { v: r.version });
+  if (r.status === 'ready' || r.status === 'manual') return tr('ui.update.available', { v: r.version });
+  throw new Error(r.message || tr('ui.update.unknownErr'));
+}
 $('app-version').addEventListener('click', (e) => {
   api.appVersion().then(openNews);
-  withSpin(e.currentTarget, async () => {
-    const r = await api.checkUpdate();
-    if (r.status === 'latest') return `최신 버전입니다 (v${r.version})`;
-    if (r.status === 'downloading') return `새 버전 v${r.version} 을 받는 중입니다. 다 받으면 알려 드립니다.`;
-    if (r.status === 'ready' || r.status === 'manual') return `새 버전 v${r.version} 이 있습니다.`;
-    throw new Error(r.message || '알 수 없는 오류');
-  }, '업데이트를 확인하지 못했습니다');
+  withSpin(e.currentTarget, updateMessage, tr('ui.update.fail'));
+});
+
+// --- 설정 창: 언어·캐릭터·사용량·글꼴 크기·업데이트 ---
+function openSettings() {
+  $('settings-pop').hidden = false;
+  $('settings-btn').setAttribute('aria-expanded', true);
+  $('set-lang').focus();
+}
+function closeSettings() {
+  $('settings-pop').hidden = true;
+  $('settings-btn').setAttribute('aria-expanded', false);
+}
+$('settings-btn').addEventListener('click', () => ($('settings-pop').hidden ? openSettings() : closeSettings()));
+$('settings-close').addEventListener('click', closeSettings);
+$('settings-pop').addEventListener('pointerdown', (e) => { if (e.target === $('settings-pop')) closeSettings(); });
+addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('settings-pop').hidden) closeSettings(); });
+// 언어는 저장하고 main 에도 바로 알린다(알림·오류 문구). 화면은 다시 시작할 때 적용한다.
+// [다시 시작] 은 종료 확인 창을 거친다. relaunch 가 없는 main 이면 버튼을 숨기고 안내만 둔다.
+$('set-lang').value = lang;
+$('set-lang').addEventListener('change', (e) => {
+  pref.set('lang', e.target.value);
+  api.setLang?.(e.target.value);
+  $('set-lang-note').hidden = $('set-restart').hidden = e.target.value === lang;
+  if (typeof api.relaunch !== 'function') $('set-restart').hidden = true;
+});
+$('set-restart').addEventListener('click', async () => {
+  const running = [...nodes.values()].filter((n) => !n.exited).length;
+  const unsaved = docs.filter((d) => d.dirty).length;
+  const ok = await confirmBox(tr('ui.restart.title'), `${tr('ui.restart.text', { n: running })}${unsaved ? `\n${tr('ui.quit.unsaved', { n: unsaved })}` : ''}`, tr('ui.update.restart'));
+  if (!ok) return;
+  flushSave();
+  api.relaunch();
+});
+// 글꼴 크기: 새 터미널은 fontSize() 로 열고, 열린 터미널은 바로 바꿔 fit(→ onResize → pty resize) 한다
+$('set-font').value = fontSize();
+$('set-font').addEventListener('change', (e) => {
+  const v = fontSize(e.target.value);
+  e.target.value = v;
+  pref.set('fontSize', v);
+  nodes.forEach((n) => { n.term.options.fontSize = v; n.fit.fit(); });
+});
+$('set-update').addEventListener('click', async (e) => {
+  const b = e.currentTarget, msg = $('set-update-msg');
+  b.disabled = true;
+  msg.textContent = tr('ui.settings.checking');
+  try { msg.textContent = await updateMessage(); } catch (err) { msg.textContent = tr('ui.settings.updateFail', { error: err.message }); }
+  b.disabled = false;
 });
 
 // 터미널에 입력 중이어도 열리게 캡처 단계에서 받는다
@@ -2016,12 +2135,12 @@ function openGroupMenu(key, name, list, anchor) {
   closeGroupMenu();
   groupMenuFor = key;
   const menu = $('group-menu');
-  const neu = el('button', 'gm-item', `새 세션 (${LABELS[cmd] ?? cmd})`);
+  const neu = el('button', 'gm-item', tr('ui.menu.new', { agent: LABELS[cmd] ?? cmd }));
   neu.addEventListener('click', () => { closeGroupMenu(); launch(list[0].data.cwd, groupSpot(list)); });
-  const imp = el('button', 'gm-item gm-has-sub', '세션 가져오기');
+  const imp = el('button', 'gm-item gm-has-sub', tr('ui.import'));
   const sub = el('ul', 'gm-sub');
   sub.hidden = true;
-  sub.append(el('li', 'gm-none', '불러오는 중…'));
+  sub.append(el('li', 'gm-none', tr('ui.loading')));
   const showSub = () => {
     sub.hidden = false;
     const r = imp.getBoundingClientRect();
@@ -2037,11 +2156,11 @@ function openGroupMenu(key, name, list, anchor) {
   api.listSessions().then((all) => {
     if (groupMenuFor !== key) return;
     const mine = all.filter((s) => projectKeyOfPath(s.cwd) === key).sort((a, b) => b.at - a.at);
-    if (!mine.length) return sub.replaceChildren(el('li', 'gm-none', `${name} 에서 했던 대화가 없습니다.`));
+    if (!mine.length) return sub.replaceChildren(el('li', 'gm-none', tr('ui.menu.noHistory', { name })));
     sub.replaceChildren(...mine.map((s) => {
       const open = openOnBoard(s);
       const li = el('li', 'gm-sess');
-      li.append(el('span', 'gm-title', nameOfSession(s.agent, s.id) ?? s.title),el('span', 'gm-meta', `${LABELS[s.agent] ?? s.agent}, ${open ? '보드에 있음' : ago(s.at)}`));
+      li.append(el('span', 'gm-title', nameOfSession(s.agent, s.id) ?? s.title),el('span', 'gm-meta', `${LABELS[s.agent] ?? s.agent}, ${open ? tr('ui.onBoard') : ago(s.at)}`));
       li.addEventListener('click', () => { closeGroupMenu(); openImported(s, groupSpot(list)); });
       return li;
     }));
@@ -2060,7 +2179,7 @@ let importAgent = pref.get('importAgent', 'claude');
 let importable = [];
 const ago = (ms) => {
   const min = Math.round((Date.now() - ms) / 60000);
-  return min < 1 ? '방금' : min < 60 ? `${min}분 전` : min < 1440 ? `${Math.round(min / 60)}시간 전` : `${Math.round(min / 1440)}일 전`;
+  return min < 1 ? tr('main.ago.now') : min < 60 ? tr('main.ago.min', { n: min }) : min < 1440 ? tr('main.ago.hour', { n: Math.round(min / 60) }) : tr('main.ago.day', { n: Math.round(min / 1440) });
 };
 const openOnBoard = (s) => [...nodes.values()].find((n) => n.data.command === s.agent && n.data.sessionId === s.id);
 
@@ -2068,7 +2187,7 @@ async function openImport() {
   $('import-pop').hidden = false;
   $('import').setAttribute('aria-expanded', 'true');
   $('import-search').value = '';
-  $('import-list').replaceChildren(el('li', 'none', '불러오는 중…'));
+  $('import-list').replaceChildren(el('li', 'none', tr('ui.loading')));
   $('import-search').focus();
   importable = await api.listSessions();
   renderImport();
@@ -2090,9 +2209,9 @@ function renderImport() {
   const q = $('import-search').value.trim().toLowerCase();
   const list = importable.filter((s) => s.agent === importAgent && (!q || [s.title, s.cwd, nameOfSession(s.agent, s.id) ?? ''].some((t) => t.toLowerCase().includes(q))));
   if (!list.length) {
-    const why = q ? '맞는 대화가 없습니다.'
-      : !installed.includes(importAgent) ? `${LABELS[importAgent]} 가 설치되어 있지 않거나 대화 기록이 없습니다.`
-      : `${LABELS[importAgent]} 로 나눈 대화 기록이 없습니다.`;
+    const why = q ? tr('ui.import.noMatch')
+      : !installed.includes(importAgent) ? tr('ui.import.notInstalled', { agent: LABELS[importAgent] })
+      : tr('ui.import.noHistory', { agent: LABELS[importAgent] });
     return $('import-list').replaceChildren(el('li', 'none', why));
   }
   $('import-list').replaceChildren(...list.map((s) => {
@@ -2101,9 +2220,9 @@ function renderImport() {
     // 2분 안에 기록된 대화는 다른 터미널에서 아직 쓰는 중일 수 있다(같이 열면 기록이 엉킬 수 있다)
     const busy = !open && Date.now() - s.at < 120000;
     const named = nameOfSession(s.agent, s.id);
-    li.append(el('span', 'name', named ?? s.title), el('span', `tag${open ? ' open' : ''}`, open ? '보드에 있음' : busy ? '다른 곳에서 쓰는 중일 수 있음' : ago(s.at)),
+    li.append(el('span', 'name', named ?? s.title), el('span', `tag${open ? ' open' : ''}`, open ? tr('ui.onBoard') : busy ? tr('ui.import.busy') : ago(s.at)),
       ...(named ? [el('span', 'path', s.title)] : []),
-      el('span', 'path', s.cwd || '작업 폴더를 모름, 위에서 고른 폴더에서 엽니다'));
+      el('span', 'path', s.cwd || tr('ui.import.noCwd')));
     li.addEventListener('click', () => openImported(s));
     // 보드로 끌어다 놓으면 놓은 자리에 연다. 끄는 동안 목록은 비켜 준다(지우면 끌기가 끊긴다).
     li.draggable = true;
@@ -2126,7 +2245,7 @@ function openImported(s, at) {
   closeImport();
   const open = openOnBoard(s);
   if (open) return focusNode(open);
-  if (!installed.includes(s.agent)) return toast(`${LABELS[s.agent]} 가 설치되어 있지 않아 열 수 없습니다.`, true);
+  if (!installed.includes(s.agent)) return toast(tr('ui.import.cantOpen', { agent: LABELS[s.agent] }), true);
   const [w, h] = NEW_SIZE;
   const id = crypto.randomUUID();
   const named = nameOfSession(s.agent, s.id);
@@ -2181,7 +2300,7 @@ const dirChanged = (abs) => {
 
 // 사이드바 [파일] 탭에 그 폴더의 트리를 연다. 이미 열린 폴더면 탭만 보여 준다.
 async function openFiles(dir) {
-  if (!dir) return toast('홈 폴더에서 연 세션은 파일 트리를 볼 수 없습니다. 작업 폴더를 골라 실행하세요.', true);
+  if (!dir) return toast(tr('ui.files.homeNo'), true);
   if ($('sidebar').hidden) setSidebar(true);
   setSideTab('files');
   if (fx.root === dir) return;
@@ -2226,7 +2345,7 @@ function fileRow(abs, name, depth, isDir, sub) {
   const c = isDir ? (dirChanged(abs) ? 'dot' : null) : changeOf(abs);
   if (c) {
     const b = el('span', `f-badge ${c === '?' ? 'U' : c}`, c === 'dot' ? '•' : c === '?' ? 'U' : c);
-    b.title = { M: '수정됨', A: '추가됨', D: '지워짐', R: '이름 바뀜', '?': '새 파일(git 에 아직 없음)', dot: '안에 바뀐 파일이 있음' }[c] ?? c;
+    b.title = { M: tr('ui.git.M'), A: tr('ui.git.A'), D: tr('ui.git.D'), R: tr('ui.git.R'), '?': tr('ui.git.new'), dot: tr('ui.git.dot') }[c] ?? c;
     row.append(b);
   }
   if (isDir) {
@@ -2254,7 +2373,7 @@ function fileRow(abs, name, depth, isDir, sub) {
 async function treeRows(dir, depth) {
   if (!fx.cache.has(dir)) fx.cache.set(dir, await api.listDir(dir));
   const ents = fx.cache.get(dir);
-  if (ents.error) return [el('div', 'f-none', `읽지 못했습니다: ${ents.error}`)];
+  if (ents.error) return [el('div', 'f-none', tr('ui.files.readFail', { error: ents.error }))];
   const rows = [];
   for (const d of ents) {
     const abs = joinPath(dir, d.name);
@@ -2276,16 +2395,16 @@ async function renderFiles() {
   if (q) {
     const found = await api.searchFiles(root, q);
     rows = found.map((r) => fileRow(joinPath(root, r.replace(/\//g, sepOf(root))), r.split('/').pop(), 0, false, r.includes('/') ? r.slice(0, r.lastIndexOf('/')) : ''));
-    if (!rows.length) rows = [el('div', 'f-none', '맞는 파일이 없습니다.')];
+    if (!rows.length) rows = [el('div', 'f-none', tr('ui.files.noMatch'))];
   } else if ($('files-only-changed').checked) {
     rows = Object.entries(fx.changes)
       .map(([r]) => [joinPath(fx.top, r.replace(/\//g, sepOf(fx.top))), r])
       .filter(([abs]) => relTo(root, abs) != null)
       .map(([abs, r]) => fileRow(abs, r.split('/').pop(), 0, false, relTo(root, abs).split('/').slice(0, -1).join('/')));
-    if (!rows.length) rows = [el('div', 'f-none', '바뀐 파일이 없습니다.')];
+    if (!rows.length) rows = [el('div', 'f-none', tr('ui.files.noChanges'))];
   } else {
     rows = await treeRows(root, 0);
-    if (!rows.length) rows = [el('div', 'f-none', '빈 폴더입니다.')];
+    if (!rows.length) rows = [el('div', 'f-none', tr('ui.files.empty'))];
   }
   if (ticket !== filesRender || fx.root !== root) return;
   $('files-tree').replaceChildren(...rows);
@@ -2316,18 +2435,18 @@ function openFileMenu(e, abs, isDir) {
   };
   const sep = () => el('div', 'gm-sep');
   const parts = [];
-  if (!isDir) parts.push(item('열기', () => { fx.active = abs; renderFiles(); openViewer({ data: { cwd: root } }, abs, 0); }));
+  if (!isDir) parts.push(item(tr('ui.fm.open'), () => { fx.active = abs; renderFiles(); openViewer({ data: { cwd: root } }, abs, 0); }));
   const into = isDir ? abs : dirOf(abs);
-  parts.push(item('새 파일', () => newEntry(into, false)), item('새 폴더', () => newEntry(into, true)));
+  parts.push(item(tr('ui.fm.newFile'), () => newEntry(into, false)), item(tr('ui.fm.newFolder'), () => newEntry(into, true)));
   if (!isRoot) {
-    parts.push(sep(), item('이름 바꾸기', () => renameEntry(abs), 'gm-key-f2'), item('휴지통으로 삭제', () => trashEntry(abs, isDir), 'gm-danger'));
+    parts.push(sep(), item(tr('ui.fm.rename'), () => renameEntry(abs), 'gm-key-f2'), item(tr('ui.fm.trash'), () => trashEntry(abs, isDir), 'gm-danger'));
   }
-  parts.push(sep(), item('경로 복사', () => { api.copy(abs); toast('경로를 복사했습니다'); }));
-  if (!isRoot) parts.push(item('상대 경로 복사', () => { api.copy(relTo(root, abs)); toast('상대 경로를 복사했습니다'); }));
-  parts.push(item(isMac ? 'Finder 에서 보기' : '탐색기에서 보기', () => api.fileOp('reveal', root, abs, null)));
+  parts.push(sep(), item(tr('ui.fm.copyPath'), () => { api.copy(abs); toast(tr('ui.fm.copiedPath')); }));
+  if (!isRoot) parts.push(item(tr('ui.fm.copyRel'), () => { api.copy(relTo(root, abs)); toast(tr('ui.fm.copiedRel')); }));
+  parts.push(item(tr(isMac ? 'ui.fm.revealMac' : 'ui.fm.reveal'), () => api.fileOp('reveal', root, abs, null)));
   const sessions = [...nodes.values()];
   if (sessions.length && !isRoot) {
-    parts.push(sep(), el('div', 'gm-label', '세션에 보내기 (@경로)'));
+    parts.push(sep(), el('div', 'gm-label', tr('ui.fm.send')));
     // 지금 고른 세션이 맨 위
     sessions.sort((a, b) => (b === focused) - (a === focused));
     for (const n of sessions.slice(0, 8)) parts.push(item(`${LABELS[n.data.command] ?? n.data.command} · ${n.data.name}`, () => insertPaths(n, [abs]), 'gm-sess-item'));
@@ -2394,7 +2513,7 @@ async function newEntry(dir, isDir) {
     temp.remove();
     if (!name) return;
     const r = await api.fileOp('create', fx.root, dir, { name, isDir });
-    if (r.error) return toast(`만들지 못했습니다: ${r.error}`, true);
+    if (r.error) return toast(tr('ui.fm.createFail', { error: r.error }), true);
     await reloadTree();
     if (!isDir) { fx.active = r.path; renderFiles(); openViewer({ data: { cwd: fx.root } }, r.path, 0); }
   });
@@ -2408,7 +2527,7 @@ async function renameEntry(abs) {
   nameInput(row, old, dot > 0 ? dot : old.length, async (name) => {
     if (!name || name === old) return renderFiles();
     const r = await api.fileOp('rename', fx.root, abs, name);
-    if (r.error) { toast(`이름을 바꾸지 못했습니다: ${r.error}`, true); return renderFiles(); }
+    if (r.error) { toast(tr('ui.fm.renameFail', { error: r.error }), true); return renderFiles(); }
     // 열린 탭·펼친 폴더·고른 파일도 새 경로를 따라간다
     const moved = (p) => (under(p, abs) ? r.path + p.slice(abs.length) : p);
     for (const d of docs) d.abs = moved(d.abs);
@@ -2422,15 +2541,15 @@ async function renameEntry(abs) {
 
 async function trashEntry(abs, isDir) {
   const name = basename(abs);
-  if (!await confirmBox('휴지통으로 삭제', `${isDir ? '폴더' : '파일'} ${name} 을(를) 휴지통으로 보낼까요?${isDir ? '\n안의 파일도 모두 함께 갑니다.' : ''}\n휴지통에서 되살릴 수 있습니다.`, '삭제')) return;
+  if (!await confirmBox(tr('ui.fm.trash'), `${tr(isDir ? 'ui.fm.trashFolder' : 'ui.fm.trashFile', { name })}${isDir ? `\n${tr('ui.fm.trashInside')}` : ''}\n${tr('ui.fm.trashRestore')}`, tr('ui.fm.delete'))) return;
   const r = await api.fileOp('trash', fx.root, abs);
-  if (r.error) return toast(`삭제하지 못했습니다: ${r.error}`, true);
+  if (r.error) return toast(tr('ui.fm.deleteFail', { error: r.error }), true);
   // 지운 파일·폴더 안의 파일 탭은 닫는다(저장 안 한 내용도 같이 사라짐)
   const gone = docs.filter((d) => under(d.abs, abs));
   for (const d of gone) docs.splice(docs.indexOf(d), 1);
   if (docActive && under(docActive, abs)) showDoc(docs[0]?.abs ?? null);
   else renderDocTabs();
-  toast(`휴지통으로 보냈습니다: ${name}`);
+  toast(tr('ui.fm.trashed', { name }));
   await reloadTree();
 }
 
@@ -2483,15 +2602,15 @@ async function saveDoc() {
   const text = d.cm.getValue(d.eol);
   let res = await api.writeFile(d.abs, text, d.mtime, false);
   if (res.conflict) {
-    if (!await confirmBox('파일이 바뀌었습니다', `${basename(d.abs)} 이(가) 연 뒤에 다른 곳에서 바뀌었습니다.\n지금 내용으로 덮어쓸까요?`, '덮어쓰기')) return;
+    if (!await confirmBox(tr('ui.doc.changedTitle'), tr('ui.doc.changedText', { name: basename(d.abs) }), tr('ui.doc.overwrite'))) return;
     res = await api.writeFile(d.abs, text, d.mtime, true);
   }
-  if (res.error) return toast(`저장하지 못했습니다: ${res.error}`, true);
+  if (res.error) return toast(tr('ui.doc.saveFail', { error: res.error }), true);
   d.mtime = res.mtime;
   d.clean = d.cm.changeGeneration();
   d.dirty = false;
   renderDocTabs();
-  toast(`저장했습니다: ${basename(d.abs)}`);
+  toast(tr('ui.doc.saved', { name: basename(d.abs) }));
 }
 
 // 클립보드의 캡처 이미지(PNG Blob). 없으면 null.
@@ -2523,7 +2642,7 @@ function renderDocTabs() {
   const bar = $('doc-tabs');
   bar.hidden = !docs.length;
   document.body.classList.toggle('has-docs', !!docs.length);
-  const board = el('button', `doc-tab board${docActive ? '' : ' on'}`, '보드');
+  const board = el('button', `doc-tab board${docActive ? '' : ' on'}`, tr('ui.doc.board'));
   board.addEventListener('click', () => showDoc(null));
   bar.replaceChildren(board, ...docs.map((d) => {
     const t = el('div', `doc-tab${docActive && sameFile(d.abs, docActive) ? ' on' : ''}`);
@@ -2531,7 +2650,7 @@ function renderDocTabs() {
     t.classList.toggle('dirty', !!d.dirty);
     t.append(el('span', 'doc-name', basename(d.abs)));
     const x = el('button', 'doc-x', '×');
-    x.setAttribute('aria-label', `${basename(d.abs)} 닫기`);
+    x.setAttribute('aria-label', tr('ui.doc.close', { name: basename(d.abs) }));
     x.addEventListener('click', (e) => { e.stopPropagation(); closeDoc(d.abs); });
     t.append(x);
     t.addEventListener('click', () => showDoc(d.abs));
@@ -2596,7 +2715,7 @@ async function showDoc(abs) {
 async function closeDoc(abs) {
   const i = docs.findIndex((x) => sameFile(x.abs, abs));
   if (i < 0) return;
-  if (docs[i].dirty && !await confirmBox('저장하지 않은 변경', `${basename(abs)} 의 고친 내용을 저장하지 않고 닫을까요?`, '닫기')) return;
+  if (docs[i].dirty && !await confirmBox(tr('ui.doc.unsavedTitle'), tr('ui.doc.unsavedText', { name: basename(abs) }), tr('ui.close'))) return;
   docs.splice(i, 1);
   if (docActive && sameFile(docActive, abs)) showDoc(docs[Math.min(i, docs.length - 1)]?.abs ?? null);
   else renderDocTabs();
@@ -2714,17 +2833,18 @@ const ICONS = {
 };
 const isBusy = (n) => [...(n.agents?.values() ?? [])].some((a) => a.status === 'running');
 
-const STATE_TEXT = { working: '일하는 중', waiting: '나를 기다리는 중', idle: '대기 중' };
+const STATE_TEXT = { working: tr('ui.state.working'), waiting: tr('ui.state.waiting'), idle: tr('ui.state.idle') };
 
 function sessionIcon(n) {
   const s = effectiveState(n);
   const b = el('button', `sess${s ? ` st-${s}` : ''}${n.exited ? ' exited' : ''}`);
   const label = LABELS[n.data.command] ?? n.data.command;
-  b.title = `${label}, ${n.exited ? '종료됨' : STATE_TEXT[s] ?? '실행 중'}. 눌러서 이동`;
+  const stateText = n.exited ? tr('ui.node.ended') : STATE_TEXT[s] ?? STATUS.running;
+  b.title = tr('ui.side.sessTitle', { label, state: stateText });
   b.setAttribute('aria-label', b.title);
   b.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">${glyphOf(n.data.command)}</svg><i></i>`;
-  b.title = `${n.data.name}, ${label}, ${n.exited ? '종료됨' : STATE_TEXT[s] ?? '실행 중'}
-마우스를 올리면 잠깐 보고, 누르면 이동`;
+  b.title = `${n.data.name}, ${label}, ${stateText}
+${tr('ui.peekHint')}`;
   b.addEventListener('pointerenter', () => peekAt(n));
   b.addEventListener('click', (e) => { e.stopPropagation(); enterSession(n); });
   return b;
@@ -2750,7 +2870,7 @@ async function addCustomDir() {
   if (!customDirs.some((d) => samePath(d, dir))) customDirs.unshift(dir);
   pref.set('customDirs', JSON.stringify(customDirs));
   await refreshFolders();
-  toast(`프로젝트 추가: ${basename(dir)}. + 를 누르면 이 폴더에서 바로 실행합니다.`);
+  toast(tr('ui.side.added', { name: basename(dir) }));
 }
 function removeCustomDir(dir) {
   customDirs = customDirs.filter((d) => !samePath(d, dir));
@@ -2781,7 +2901,7 @@ function openAliasPop(repo, anchor) {
   const pop = $('alias-pop');
   const cur = aliases[aliasKey(repo)];
   const input = el('input');
-  input.placeholder = '묶음 이름 (예: 백엔드), Enter';
+  input.placeholder = tr('ui.alias.ph');
   input.value = cur ?? '';
   input.maxLength = 30;
   input.addEventListener('keydown', (e) => {
@@ -2794,14 +2914,14 @@ function openAliasPop(repo, anchor) {
     b.addEventListener('click', () => { setAlias(repo, n); closeAliasPop(); });
     return b;
   });
-  pop.replaceChildren(el('div', 'alias-title', `${basename(repo)} 를 묶을 이름`), input);
+  pop.replaceChildren(el('div', 'alias-title', tr('ui.alias.title', { name: basename(repo) })), input);
   if (chips.length) {
     const box = el('div', 'alias-chips');
     box.append(...chips);
     pop.append(box);
   }
   if (cur) {
-    const out = el('button', 'alias-out', `'${cur}' 묶음에서 빼기`);
+    const out = el('button', 'alias-out', tr('ui.alias.out', { name: cur }));
     out.addEventListener('click', () => { setAlias(repo, ''); closeAliasPop(); });
     pop.append(out);
   }
@@ -2841,7 +2961,7 @@ function openAliasColor(name, anchor) {
   });
   const box = el('div', 'alias-swatches');
   box.append(...swatches);
-  pop.replaceChildren(el('div', 'alias-title', `'${name}' 묶음 색`), box);
+  pop.replaceChildren(el('div', 'alias-title', tr('ui.alias.color', { name })), box);
   const r = anchor.getBoundingClientRect();
   Object.assign(pop.style, { left: `${r.left}px`, top: `${r.bottom + 6}px` });
   pop.hidden = false;
@@ -2851,7 +2971,7 @@ const TAG_ICON = '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="t
 function aliasButton(repo) {
   const b = el('button', 'icon-btn alias-btn');
   b.innerHTML = TAG_ICON;
-  b.title = aliases[aliasKey(repo)] ? `묶음: ${aliases[aliasKey(repo)]} (눌러서 바꾸기)` : '다른 프로젝트와 별칭으로 묶기';
+  b.title = aliases[aliasKey(repo)] ? tr('ui.alias.current', { name: aliases[aliasKey(repo)] }) : tr('ui.alias.add');
   b.setAttribute('aria-label', b.title);
   b.addEventListener('click', (e) => { e.stopPropagation(); openAliasPop(repo, b); });
   return b;
@@ -2868,7 +2988,7 @@ const BRANCH_ICON = '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden
 function worktreeButton(repo) {
   const b = el('button', 'icon-btn wt-add');
   b.innerHTML = BRANCH_ICON;
-  b.title = '워크트리 추가';
+  b.title = tr('ui.side.addWt');
   b.setAttribute('aria-label', b.title);
   b.addEventListener('click', (e) => { e.stopPropagation(); openWorktreeForm(repo); });
   return b;
@@ -2909,7 +3029,7 @@ function folderRow(f, label, badge, sessions, repo, branch, aliasable) {
   // 둘째 줄: 브랜치와 git 상태. 이름이 잘리지 않게 첫 줄과 나눈다
   const meta = el('div', 'wt-meta');
   if (branch) meta.append(el('span', 'wt-sub', branch));
-  if (f.changes) meta.append(el('span', 'git', `변경 ${f.changes}`));
+  if (f.changes) meta.append(el('span', 'git', tr('ui.side.changes', { n: f.changes })));
   if (f.ahead || f.behind) meta.append(el('span', 'git', [f.ahead && `↑${f.ahead}`, f.behind && `↓${f.behind}`].filter(Boolean).join(' ')));
   main.append(line);
   if (meta.childElementCount) main.append(meta);
@@ -2918,7 +3038,7 @@ function folderRow(f, label, badge, sessions, repo, branch, aliasable) {
   if (f.path) {
     const fb = el('button', 'icon-btn wt-files');
     fb.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>';
-    fb.title = '파일 보기';
+    fb.title = tr('ui.node.files');
     fb.setAttribute('aria-label', fb.title);
     fb.addEventListener('click', (e) => { e.stopPropagation(); openFiles(f.path); });
     actions.append(fb);
@@ -2927,13 +3047,13 @@ function folderRow(f, label, badge, sessions, repo, branch, aliasable) {
   if (repo) actions.append(worktreeButton(repo));
   if (f.custom) {
     const rm = el('button', 'icon-btn wt-remove', '×');
-    rm.title = '사이드바 목록에서 빼기 (폴더는 지우지 않음)';
+    rm.title = tr('ui.side.remove');
     rm.setAttribute('aria-label', rm.title);
     rm.addEventListener('click', (e) => { e.stopPropagation(); removeCustomDir(f.path); });
     actions.append(rm);
   }
   const add = el('button', 'icon-btn wt-new', '+');
-  add.title = `이 폴더에서 ${LABELS[cmd]} 실행`;
+  add.title = tr('ui.side.runHere', { agent: LABELS[cmd] });
   add.addEventListener('click', (e) => { e.stopPropagation(); launch(f.path); });
   actions.append(add);
   row.append(el('i', 'state'), main, actions);
@@ -2969,7 +3089,7 @@ function renderSidebar() {
       members.forEach((f, i) => {
         const list = sessionsAt(f.path);
         sessions.push(...list);
-        rows.push(folderRow(f, i ? f.branch : root.branch ?? '폴더', i ? '워크트리' : '기본', list));
+        rows.push(folderRow(f, i ? f.branch : root.branch ?? tr('ui.side.folder'), tr(i ? 'ui.folder.worktree' : 'ui.side.main'), list));
       });
       section = projectGroup(root.path, basename(root.path), rows, sessions, root.path);
     }
@@ -2991,7 +3111,7 @@ function renderSidebar() {
     box.style.setProperty('--hue', aliasHue(g));
     box.querySelector('.proj-label').append(el('span', 'alias-count', ` ${sections.length}`));
     const dot = el('button', 'alias-dot');
-    dot.title = `'${g}' 묶음 색 바꾸기`;
+    dot.title = tr('ui.alias.recolor', { name: g });
     dot.setAttribute('aria-label', dot.title);
     dot.addEventListener('click', (e) => { e.stopPropagation(); openAliasColor(g, dot); });
     box.querySelector('.proj-head').prepend(dot);
@@ -3002,9 +3122,9 @@ function renderSidebar() {
     const byPath = new Map();
     for (const n of rest) byPath.set(n.data.cwd, [...(byPath.get(n.data.cwd) ?? []), n]);
     const rows = [...byPath].map(([p, list]) => folderRow({ path: p }, basename(p), null, list));
-    groups.push(projectGroup('\0other', '다른 폴더', rows, rest));
+    groups.push(projectGroup('\0other', tr('ui.side.other'), rows, rest));
   }
-  $('side-list').replaceChildren(...(groups.length ? groups : [el('p', 'side-empty', 'Claude Code를 한 번이라도 실행한 폴더가 여기에 나옵니다.')]));
+  $('side-list').replaceChildren(...(groups.length ? groups : [el('p', 'side-empty', tr('ui.side.empty'))]));
 }
 
 // 워크트리 추가 폼은 사이드바 아래에 고정 — 목록이 자주 다시 그려져도 입력이 날아가지 않게 목록 밖에 둔다.
@@ -3012,7 +3132,7 @@ let wtRepo = null;
 function openWorktreeForm(repo) {
   wtRepo = repo;
   $('wt-form').hidden = false;
-  $('wt-repo').textContent = `${basename(repo)} 에 워크트리 추가`;
+  $('wt-repo').textContent = tr('ui.wt.title', { name: basename(repo) });
   $('wt-error').textContent = '';
   $('wt-branch').value = '';
   $('wt-branch').focus();
@@ -3042,9 +3162,9 @@ $('wt-branch').addEventListener('keydown', (e) => { if (e.key === 'Escape') clos
 function castGroups() {
   const live = [...nodes.values()].filter((n) => !n.exited);
   const out = [
-    ...(selection.size ? [{ key: 'sel', label: '선택한 세션', list: live.filter((n) => selection.has(n.data.id)) }] : []),
-    { key: 'claude', label: 'Claude 세션 전체', list: live.filter((n) => n.data.command === 'claude') },
-    { key: 'all', label: '모든 세션', list: live },
+    ...(selection.size ? [{ key: 'sel', label: tr('ui.cast.selected'), list: live.filter((n) => selection.has(n.data.id)) }] : []),
+    { key: 'claude', label: tr('ui.cast.claude'), list: live.filter((n) => n.data.command === 'claude') },
+    { key: 'all', label: tr('ui.cast.all'), list: live },
   ];
   for (const root of folders.filter((f) => !f.worktreeOf)) {
     const paths = [root.path, ...folders.filter((f) => f.worktreeOf && samePath(f.worktreeOf, root.path)).map((f) => f.path)];
@@ -3087,7 +3207,7 @@ $('cast').addEventListener('submit', (e) => {
     const m = parseMentions(text);
     if (!m.targets.length) {
       $('cast-text').classList.add('bad');
-      $('cast-text').title = `"${text.trim().split(/\s/)[0]}" 세션이 없습니다. @ 를 치면 이름 목록이 나옵니다.`;
+      $('cast-text').title = tr('ui.cast.noSession', { name: text.trim().split(/\s/)[0] });
       return;
     }
     list = m.targets;
@@ -3103,7 +3223,7 @@ $('cast').addEventListener('submit', (e) => {
     setTimeout(() => api.write(n.data.id, '\r'), 80);
   }
   $('cast-text').value = '';
-  $('cast-text').placeholder = `${group.list.map((n) => n.data.name).join(', ')} 에 보냈습니다`;
+  $('cast-text').placeholder = tr('ui.cast.sent', { names: group.list.map((n) => n.data.name).join(', ') });
 });
 
 // @ 자동완성: 커서 앞이 "@글자" 면 이름 목록을 띄운다. ↑↓ 이동, Tab·Enter 넣기, Esc 닫기.
@@ -3289,7 +3409,7 @@ $('side-refresh').addEventListener('click', (e) => withSpin(e.currentTarget, asy
   await refreshFolders();
   const roots = folders.filter((f) => !f.worktreeOf).length;
   const wts = folders.length - roots;
-  return `프로젝트 목록 최신화 완료: 프로젝트 ${roots}개${wts ? `, 워크트리 ${wts}개` : ''}`;
+  return wts ? tr('ui.side.refreshedWt', { n: roots, w: wts }) : tr('ui.side.refreshed', { n: roots });
 }));
 addEventListener('focus', () => { if (!$('sidebar').hidden) refreshFolders(); });
 
@@ -3301,7 +3421,8 @@ addEventListener('focus', () => { if (!$('sidebar').hidden) refreshFolders(); })
   refreshFolders();
   setSidebar(pref.get('sidebar', '1') === '1');
   setSideTab(pref.get('sideTab', 'projects'));
-  const saved = await api.loadBoard();
+  // 읽기 실패로 초기화가 멈추면 빈 화면이 된다. 새 보드로 계속 간다.
+  const saved = await api.loadBoard().catch(() => (toast(tr('ui.board.loadFail'), true), null));
   if (saved) {
     view = saved.view;
     links = saved.links ?? [];

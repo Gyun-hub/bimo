@@ -187,6 +187,29 @@ body.has-docs #viewport, #docs { top: 88px; }
 #quit-cancel { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--line); }
 #quit-cancel:hover { background: #2d3039; }
 .quit-actions button:focus-visible { outline: 2px solid #93c5fd; outline-offset: 2px; }
+/* 설정 창: 바뀐 점 창과 같은 덮개·상자 */
+#settings-pop { position: fixed; inset: 0; z-index: 58; display: grid; place-items: center; background: #00000073; animation: fade .12s; }
+#settings-pop[hidden] { display: none; }
+.settings-box { width: min(480px, calc(100% - 32px)); max-height: 80vh; display: flex; flex-direction: column; background: var(--surface); border-radius: var(--r-md); box-shadow: var(--e3), 0 0 0 1px #ffffff14; animation: pop .14s var(--ease); }
+#settings-title { margin: 0; padding: 18px 20px 6px; font-size: 16px; font-weight: 600; color: var(--text); }
+.settings-list { display: grid; grid-template-columns: max-content 1fr; gap: 12px 16px; margin: 0; padding: 10px 20px; overflow: auto; font-size: 13px; color: var(--text); }
+.settings-list dt { color: var(--muted); padding-top: 3px; }
+.settings-list dd { margin: 0; min-width: 0; }
+.settings-note { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.settings-note:empty { display: none; }
+/* select 오른쪽에 다시 시작 버튼·캐릭터 고르기를 한 줄로 */
+.settings-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+#set-restart[hidden] { display: none; }
+/* 두 줄 설명: 체크박스를 첫 줄에 맞추고 괄호 설명은 둘째 줄 */
+.keys-opt.top { align-items: flex-start; line-height: 1.5; }
+.keys-opt.top input { margin: 3px 0 0; flex: none; }
+.opt-sub { display: block; color: var(--muted); font-size: 12px; }
+/* 스핀 버튼은 기본이 hover 때만 보여서 늘 보이게 */
+#set-font::-webkit-inner-spin-button, #set-font::-webkit-outer-spin-button { opacity: 1; }
+#set-lang, #set-font, #set-update, #set-restart { background: var(--panel, #1b1d23); color: inherit; border: 1px solid #3a3f4b; border-radius: 6px; padding: 3px 8px; font: inherit; }
+#set-font { width: 64px; }
+#set-update { cursor: pointer; margin-left: 6px; }
+#set-update:disabled { opacity: .5; cursor: default; }
 @keyframes pop { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
 #folder-search { box-sizing: border-box; width: 100%; background: transparent; border: 0; border-bottom: 1px solid var(--line); color: var(--text); font: inherit; padding: 12px 14px; outline: none; }
 #folder-list { list-style: none; margin: 0; padding: 6px; max-height: 360px; overflow: auto; }
@@ -208,7 +231,7 @@ body.has-docs #viewport, #docs { top: 88px; }
 #import-pop.dragging { opacity: .25; pointer-events: none; }
 /* 끌던 대화를 목록 창 위로 다시 가져오면: 여기 놓으면 취소 */
 #import-pop.dragging.cancel { opacity: .9; box-shadow: var(--e3), inset 0 0 0 2px var(--fail); }
-#import-pop.dragging.cancel::after { content: '여기 놓으면 취소'; position: absolute; inset: 0; display: grid; place-items: center; background: #1b1d23cc; color: var(--text); font-weight: 600; }
+#import-pop.dragging.cancel::after { content: var(--t-drop-cancel, '여기 놓으면 취소'); position: absolute; inset: 0; display: grid; place-items: center; background: #1b1d23cc; color: var(--text); font-weight: 600; }
 #import-list li[draggable='true'] { cursor: grab; }
 .import-tabs { display: flex; gap: 4px; padding: 8px 8px 0; }
 .import-tabs button { background: none; border: 0; border-radius: var(--r-sm); padding: 6px 12px; color: var(--muted); font-size: 12.5px; font-weight: 500; cursor: pointer; }
@@ -297,7 +320,7 @@ body.ctrl:not(.hand) #viewport .node, body.ctrl:not(.hand) #viewport .xterm { cu
 #inbox-list .sess { flex: none; }
 #inbox-list .ib-name { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #inbox-list .ib-time { flex: none; font-size: 11px; color: var(--muted); }
-#inbox-list li.perm .ib-time::before { content: '권한 요청 · '; color: var(--signal); }
+#inbox-list li.perm .ib-time::before { content: var(--t-perm, '권한 요청 · '); color: var(--signal); }
 /* 확인 안 한 응답: 로고 불빛과 테두리가 천천히 깜빡인다. 줄에 마우스를 올리면 멈춘다. */
 #inbox-list .sess { animation: inbox-blink 1.4s ease-in-out infinite; }
 #inbox-list .sess i { animation: blink 1.4s ease-in-out infinite; }
@@ -634,7 +657,7 @@ body.no-critters .critter { display: none; }
 .cr-move { position: absolute; left: 0; bottom: 0; }
 .cr-body svg { display: block; }
 .keys-opt { display: flex; align-items: center; gap: 6px; cursor: pointer; }
-#opt-critter-kind { margin-top: 4px; background: var(--panel, #1b1d23); color: inherit; border: 1px solid #3a3f4b; border-radius: 6px; padding: 2px 6px; font: inherit; }
+#opt-critter-kind { background: var(--panel, #1b1d23); color: inherit; border: 1px solid #3a3f4b; border-radius: 6px; padding: 2px 6px; font: inherit; }
 .critter.left .cr-move { transform: scaleX(-1); }
 .critter[data-kind="box"].left .cr-move { transform: none; } /* 화면 글자(얼굴)가 거울처럼 뒤집히지 않게 */
 .critter.gone .cr-body { filter: grayscale(1) opacity(.5); }

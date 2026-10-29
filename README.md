@@ -4,6 +4,8 @@
 
 <p align="center">AI 코딩 CLI 터미널을 한 보드 위에 펼쳐 두고 같이 굴리는 데스크톱 앱</p>
 
+<p align="center">한국어 · <a href="README.en.md">English</a></p>
+
 여러 프로젝트에서 Claude Code · Codex 같은 AI CLI 를 동시에 돌리면 터미널 창이 금방 쌓인다. Bimo 는 그 터미널들을 무한 보드 위의 카드로 놓고, 어떤 세션이 일하는 중인지·답이 끝났는지를 한눈에 보여 준다.
 
 ## 기능
