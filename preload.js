@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld('api', {
   gitChanges: (dir) => ipcRenderer.invoke('files:status', dir),
   searchFiles: (dir, q) => ipcRenderer.invoke('files:search', dir, q),
   readFile: (file) => ipcRenderer.invoke('files:read', file),
+  openDoc: (file) => ipcRenderer.invoke('doc:open', file),
+  openExternal: (file) => ipcRenderer.invoke('files:openExternal', file),
   writeFile: (file, text, mtime, force) => ipcRenderer.invoke('files:write', file, text, mtime, force),
   fileOp: (op, root, target, name) => ipcRenderer.invoke('files:op', op, root, target, name),
   onFocusNode: (cb) => ipcRenderer.on('node:focus', (_, id) => cb(id)),

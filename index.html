@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <title>Bimo</title>
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' bimo-doc:; object-src 'none'; frame-src bimo-doc:; form-action 'none'; base-uri 'none'">
   <link rel="stylesheet" href="node_modules/@fontsource/ibm-plex-sans-kr/400.css">
   <link rel="stylesheet" href="node_modules/@fontsource/ibm-plex-sans-kr/500.css">
   <link rel="stylesheet" href="node_modules/@fontsource/ibm-plex-sans-kr/600.css">
@@ -142,7 +142,7 @@
   </aside>
   <nav id="doc-tabs" hidden aria-label="열어 둔 파일" data-i18n-aria="ui.h.docTabs"></nav>
   <section id="docs" hidden aria-label="파일 보기" data-i18n-aria="ui.h.docs">
-    <div class="doc-bar"><span id="doc-path"></span></div>
+    <div class="doc-bar"><span id="doc-path"></span><button id="doc-ext" class="doc-ext" hidden data-i18n="ui.doc.openExternal">OS 앱으로 열기</button></div>
     <div class="doc-body">
       <div id="doc-code"></div>
       <div class="doc-split" title="끌어서 좌우 폭 바꾸기" data-i18n-title="ui.h.docSplit"></div>

@@ -10,6 +10,7 @@ const viewport = $('viewport');
 const boardEl = $('board');
 const Term = window.Terminal.Terminal || window.Terminal;
 const nodes = new Map(); // id -> { data, el, term, fit, agents?, rack? }
+const cards = new Map(); // 문서 카드 id -> { data: { id, path, x, y, w, h }, el, body } (아래 '문서 카드' 절)
 let view = { x: 0, y: 0, scale: 1 };
 let winBuild = 0; // Windows 빌드 번호, xterm windowsPty 옵션용
 // Mac 에선 Ctrl 대신 Cmd (Ctrl+클릭은 Mac 에서 우클릭이다)
@@ -50,6 +51,7 @@ const fontSize = (v = pref.get('fontSize')) => Math.min(20, Math.max(10, Math.ro
 
 // --- 보드 ---
 
+let zsTimer;
 function applyView() {
   const { x, y, scale: s } = view;
   boardEl.style.transform = `translate(${x}px, ${y}px) scale(${s})`;
@@ -59,11 +61,15 @@ function applyView() {
   // 멀리 보기 덮개: 이름 글자는 배율을 거꾸로 곱해 화면에서 늘 비슷한 크기로
   boardEl.classList.toggle('far', s <= FAR_SCALE);
   boardEl.style.setProperty('--inv', 1 / s);
+  // PDF 카드 역보정 배율(style.css .doc-card iframe). 확대일 때만 — 축소 때도 하면 뷰어 도구 막대가 화면 실제 크기로 그려져 세션보다 커 보인다.
+  // 휠마다 바꾸면 PDF 가 매번 다시 그려져 버벅여 멈춘 뒤에 반영한다.
+  clearTimeout(zsTimer);
+  zsTimer = setTimeout(() => boardEl.style.setProperty('--zs', Math.max(1, view.scale)), 180);
   drawMinimap();
 }
 
 function save() {
-  $('empty').hidden = nodes.size > 0;
+  $('empty').hidden = nodes.size + cards.size > 0;
   renderSidebar();
   renderGroups();
   drawMinimap();
@@ -79,7 +85,7 @@ function flushSave() {
 }
 
 // board.json 에 저장하는 내용. 프로젝트 색(groupColors)도 여기 들어가 재실행해도 유지된다.
-const boardData = () => ({ view, nodes: [...nodes.values()].map((n) => n.data), links, groupColors });
+const boardData = () => ({ view, nodes: [...nodes.values()].map((n) => n.data), cards: [...cards.values()].map((c) => c.data), links, groupColors });
 
 // --- 세션끼리 호출: 사용자가 케이블로 이은 세션만 서로 부를 수 있다 ---
 
@@ -319,11 +325,22 @@ function uniqueName(base) {
 
 function drag(e, onMove, onEnd) {
   e.preventDefault();
+  document.body.classList.add('dragging'); // 끄는 동안 문서 카드 iframe 이 포인터를 가로채지 않게
   let lx = e.clientX, ly = e.clientY;
   const move = (ev) => { onMove(ev.clientX - lx, ev.clientY - ly, ev); lx = ev.clientX; ly = ev.clientY; };
-  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); onEnd?.(); save(); };
+  // pointercancel(터치·창 전환 등)으로 끝나도 같이 정리해 body.dragging 이 남지 않게
+  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', up); document.body.classList.remove('dragging'); onEnd?.(); save(); };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
+  addEventListener('pointercancel', up);
+}
+
+// 크기 조절 한 걸음(보드 좌표). 왼쪽·위로 늘리면 위치도 같이 옮겨 반대편이 제자리에 있게 한다.
+function resizeBy(data, d, dx, dy, minW, minH) {
+  if (d.includes('e')) data.w = Math.max(minW, data.w + dx);
+  if (d.includes('s')) data.h = Math.max(minH, data.h + dy);
+  if (d.includes('w')) { const w = Math.max(minW, data.w - dx); data.x += data.w - w; data.w = w; }
+  if (d.includes('n')) { const h = Math.max(minH, data.h - dy); data.y += data.h - h; data.h = h; }
 }
 
 // 세션 창 마그넷: 다른 창의 가장자리에서 화면 기준 14px 안이면 붙인다.
@@ -333,7 +350,7 @@ function snapTo(n, x, y) {
   const t = 14 / view.scale;
   const { w } = n.data, h = n.data.h + rackH(n); // 끄는 노드의 카드 줄도 다른 창에 겹치지 않게
   let bx = null, by = null;
-  for (const m of nodes.values()) {
+  for (const m of [...nodes.values(), ...cards.values()]) {
     if (m === n) continue;
     const o = m.data, oR = o.x + o.w, oB = bottomEdge(m);
     // 세로로 겹치거나 가까운 창만 가로로 붙이고, 가로로 겹치거나 가까운 창만 세로로 붙인다
@@ -732,7 +749,7 @@ async function addNode(data) {
   if (data.command === 'claude') data.sessionId ??= crypto.randomUUID();
   data.name ??= uniqueName(basename(data.cwd));
   const node = el('div', 'node');
-  node.innerHTML = `<div class="head"><span class="agent"></span><span class="where"></span><span class="copied">${tr('ui.node.copied')}</span><span class="tokens"></span><span class="ended">${tr('ui.node.ended')}</span><button class="restart">${tr('ui.node.restart')}</button><button class="files-btn icon-btn" title="${tr('ui.node.filesTitle')}" aria-label="${tr('ui.node.files')}"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="close" aria-label="${tr('ui.node.close')}">×</button><button class="link-state"><span class="link-label"></span><span class="link-list"></span></button></div><div class="body"></div>${['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].map((d) => `<div class="rz rz-${d}" data-dir="${d}"></div>`).join('')}<div class="port" title="${tr('ui.node.port')}"></div>${critterHtml(pickCritter())}`;
+  node.innerHTML = `<div class="head"><span class="agent"></span><span class="where"></span><span class="tokens"></span><span class="ended">${tr('ui.node.ended')}</span><button class="restart">${tr('ui.node.restart')}</button><button class="files-btn icon-btn" title="${tr('ui.node.filesTitle')}" aria-label="${tr('ui.node.files')}"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="close" aria-label="${tr('ui.node.close')}">×</button><button class="link-state"><span class="link-label"></span><span class="link-list"></span></button></div><div class="body"></div>${['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].map((d) => `<div class="rz rz-${d}" data-dir="${d}"></div>`).join('')}<div class="port" title="${tr('ui.node.port')}"></div>${critterHtml(pickCritter())}`;
   node.querySelector('.agent').textContent = LABELS[data.command] ?? data.command;
   node.querySelector('.where').textContent = data.name;
   node.querySelector('.where').title = `${data.cwd || tr('ui.home')}\n${tr('ui.node.renameHint')}`;
@@ -794,18 +811,13 @@ async function addNode(data) {
     collabFor === n ? closeCollab() : openCollab(n);
   });
   node.querySelector('.files-btn').addEventListener('click', () => openFiles(data.cwd));
-  // 테두리·모서리 어디서든 크기 조절. 왼쪽·위로 늘리면 위치도 같이 옮겨 반대편이 제자리에 있게 한다.
+  // 테두리·모서리 어디서든 크기 조절
   const MIN_W = 320, MIN_H = 200;
   for (const h of node.querySelectorAll('.rz')) h.addEventListener('pointerdown', (e) => {
     e.stopPropagation();
     const d = h.dataset.dir;
     drag(e, (dx, dy) => {
-      dx /= view.scale;
-      dy /= view.scale;
-      if (d.includes('e')) data.w = Math.max(MIN_W, data.w + dx);
-      if (d.includes('s')) data.h = Math.max(MIN_H, data.h + dy);
-      if (d.includes('w')) { const w = Math.max(MIN_W, data.w - dx); data.x += data.w - w; data.w = w; }
-      if (d.includes('n')) { const hh = Math.max(MIN_H, data.h - dy); data.y += data.h - hh; data.h = hh; }
+      resizeBy(data, d, dx / view.scale, dy / view.scale, MIN_W, MIN_H);
       place(n);
     });
   });
@@ -934,11 +946,17 @@ async function addNode(data) {
   if (!isMac) node.querySelector('.body').addEventListener('contextmenu', (e) => {
     e.preventDefault();
     if (term.hasSelection()) {
-      copySelection(n);
+      copySelection(n, true);
       term.clearSelection();
     } else {
       pasteInto();
     }
+  });
+  // mouseup 을 놓쳐도(드래그 중 Alt+Tab 등) 복사되게 선택이 멈추면 한 번 더 복사한다. 드래그 중에는 기다린다.
+  term.onSelectionChange(() => {
+    clearTimeout(n.selTimer);
+    if (!term.hasSelection()) return void (n.copied = ''); // 지웠다가 같은 글자를 다시 고르면 다시 복사
+    n.selTimer = setTimeout(() => mouseTerm !== n && copySelection(n), 120);
   });
   term.onData((d) => {
     api.write(data.id, d);
@@ -981,6 +999,7 @@ function unscale(e, n) {
 }
 for (const type of ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick', 'contextmenu']) {
   addEventListener(type, (e) => {
+    if (type === 'mousedown') mouseTerm = null; // 놓친 mouseup 이 남긴 값이 새 클릭을 엉뚱한 터미널로 보내지 않게
     const n = mouseTerm ?? nodeOfEl.get(e.target.closest?.('.xterm')?.closest('.node'));
     if (!n) return;
     if (type === 'mousedown') mouseTerm = n;
@@ -994,19 +1013,26 @@ for (const type of ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick', 'c
     }
     if (type === 'mouseup') {
       mouseTerm = null;
-      setTimeout(() => copySelection(n)); // xterm 이 선택을 확정한 뒤
+      setTimeout(() => copySelection(n, true)); // xterm 이 선택을 확정한 뒤. 직접 뗀 드래그는 같은 글자여도 다시 복사(그사이 클립보드가 바뀌었을 수 있다)
     }
   }, true);
 }
+// 창이 포커스를 잃거나 포인터가 취소되면 mouseup 이 오지 않는다 → 드래그를 끝난 것으로 보고 복사한다
+const releaseMouse = () => {
+  const n = mouseTerm;
+  mouseTerm = null;
+  if (n) setTimeout(() => copySelection(n));
+};
+addEventListener('blur', releaseMouse);
+addEventListener('pointercancel', releaseMouse, true);
 
-// 터미널에서 드래그·더블클릭으로 고른 글자는 바로 클립보드로
-function copySelection(n) {
-  if (!n.term.hasSelection()) return;
-  api.copy(n.term.getSelection());
-  const tag = n.el.querySelector('.copied');
-  tag.classList.remove('show');
-  void tag.offsetWidth;
-  tag.classList.add('show');
+// 터미널에서 드래그·더블클릭으로 고른 글자는 바로 클립보드로. mouseup 과 선택 변경이 겹쳐도 같은 글자는 한 번만 (force = 오른쪽 클릭·mouseup)
+function copySelection(n, force) {
+  const s = n.term.hasSelection() ? n.term.getSelection() : '';
+  if (!s || (!force && s === n.copied)) return;
+  n.copied = s;
+  api.copy(s);
+  toast(tr('ui.toast.copied'), 'copy');
 }
 
 // 여러 세션 고르기: Ctrl+세션 클릭으로 넣고 빼기. 고른 세션은 보내기 바의 대상이 된다.
@@ -1179,7 +1205,7 @@ function renderGroups() {
 const coversEl = el('div');
 coversEl.id = 'covers';
 boardEl.append(coversEl);
-const FAR_SCALE = 0.3; // 이 배율 이하면 멀리 보기: 프로젝트 이름으로 덮는다
+const FAR_SCALE = 0.45; // 이 배율 이하면 멀리 보기: 프로젝트 이름으로 덮는다
 
 // 피그마식 도구: V = 선택, H = 이동(손). 이동 모드에선 세션 위에서 끌어도 보드가 움직인다.
 let tool = 'select';
@@ -1410,6 +1436,13 @@ function agentCard(n, a) {
   box.innerHTML = '<div class="ac-head"><i class="led"></i><div class="ac-titles"><span class="ac-title"></span><span class="ac-meta"></span></div><span class="sub-time"></span><button class="sub-x">×</button></div><div class="ac-list"></div>';
   const c = { el: box, list: box.querySelector('.ac-list'), a, open: new Set() };
   a.timeEl = box.querySelector('.sub-time');
+  // 본문에서 끌어 고른 글자는 터미널처럼 바로 클립보드로
+  c.list.addEventListener('mouseup', () => setTimeout(() => {
+    const sel = getSelection(), text = sel.toString();
+    if (!text || !c.list.contains(sel.anchorNode) || !c.list.contains(sel.focusNode)) return;
+    api.copy(text);
+    toast(tr('ui.toast.copied'), 'copy');
+  }));
   box.querySelector('.sub-x').addEventListener('click', () => stopOrRemove(n, a));
   // 간략히 보기에서 카드를 누르면 자세히 보기로
   box.querySelector('.ac-head').addEventListener('click', (e) => { if (rackBrief && !e.target.closest('button')) setRackBrief(false); });
@@ -1454,7 +1487,7 @@ async function loadCard(c) {
     item.append(el('div', 'msg-text', m.text));
     if (m.role === 'tool' || m.role === 'result') {
       item.title = tr('ui.agent.expand');
-      item.addEventListener('click', () => (item.classList.toggle('open') ? c.open.add(i) : c.open.delete(i)));
+      item.addEventListener('click', () => getSelection().isCollapsed && (item.classList.toggle('open') ? c.open.add(i) : c.open.delete(i)));
     }
     return item;
   });
@@ -1744,16 +1777,17 @@ async function withSpin(btn, work, failPrefix = tr('ui.refreshFail')) {
 }
 
 let toastTimer;
-function toast(text, bad) {
+function toast(text, kind) { // kind: true = 실패, 'copy' = 복사 알림(노란 굵은 글자)
   const t = $('toast');
   t.textContent = text;
-  t.classList.toggle('bad', !!bad);
+  t.classList.toggle('bad', kind === true);
+  t.classList.toggle('copy', kind === 'copy');
   t.hidden = false;
   t.classList.remove('show');
   void t.offsetWidth; // 연달아 떠도 애니메이션이 다시 돌게
   t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 2600);
+  toastTimer = setTimeout(() => { t.hidden = true; }, kind === 'copy' ? 1300 : 2600); // 복사 알림만 짧게 (css #toast.copy.show 와 맞춘다)
 }
 // 앱 창으로 돌아오면 다시 찾는다(새로 설치한 CLI). 너무 자주 돌지 않게 10초 간격.
 addEventListener('focus', () => { if (Date.now() - lastDetect > 10000) detectAgents(); });
@@ -1898,6 +1932,13 @@ api.appVersion().then((v) => {
 // 업데이트 뒤 처음 켜면 바뀐 점 목록. "닫기" 는 다음에 켤 때 또 뜨고, "다시 보지 않기" 는 이 버전에서 다시 안 뜬다.
 // 버전을 올릴 때 맨 위에 한 덩어리 추가한다.
 const CHANGES = [
+  { v: '1.2.0', items: [
+    { ko: 'PDF·이미지(png·jpg·gif·webp)를 보드 위 카드로 엽니다. 세션 창처럼 끌고 크기를 바꿀 수 있고, 다시 켜도 남습니다. 확대해도 PDF 글자가 선명합니다.', en: 'PDFs and images (png, jpg, gif, webp) now open as cards on the board. Drag and resize them like session windows; they stay after restart, and PDF text stays sharp when zoomed in.' },
+    { ko: '미리보기 못 하는 큰 파일·바이너리는 [OS 앱으로 열기]로 엽니다. 실행 파일은 열지 않습니다.', en: 'Files too large or not text to preview can be opened with [Open in default app]. Executables are never opened.' },
+    { ko: '서브 에이전트 카드의 글자도 드래그하면 바로 복사됩니다.', en: 'Text in sub-agent cards is now copied as soon as you select it.' },
+    { ko: '복사하면 보내기 바 위에 "복사 완료"가 잠깐 뜹니다. 드래그를 놓치는 경우에도 복사가 빠지지 않습니다.', en: 'Copying shows a short "Copied" notice above the send bar, and copies are no longer missed when a drag ends unexpectedly.' },
+    { ko: '멀리 보기(프로젝트 이름으로 덮기)가 45% 이하에서 켜집니다.', en: 'The zoomed-out project view now turns on at 45% or less.' },
+  ] },
   { v: '1.1.0', items: [
     { ko: '영어를 지원합니다. 처음엔 OS 언어를 따르고, 설정에서 한국어/영어를 고를 수 있습니다.', en: 'English is now supported. Bimo follows your OS language at first, and you can switch between Korean and English in Settings.' },
     { ko: '오른쪽 위 톱니에 설정 창이 생겼습니다: 언어, 캐릭터, 사용량 보기, 터미널 글꼴 크기, 업데이트 확인.', en: 'New Settings window (gear, top right): language, characters, usage display, terminal font size, and update check.' },
@@ -2095,7 +2136,7 @@ addEventListener('keydown', (e) => {
 // 새 노드는 겹치지 않는 빈 칸에 둔다. 보이는 영역 왼쪽 위부터 격자로 훑고, 서브 에이전트 카드 줄 자리까지 비워 둔다.
 function freeSpot(w, h) {
   const gap = 110; // 프로젝트 테두리(24)·이름표(32)가 옆 프로젝트와 겹치지 않게
-  const taken = [...nodes.values()].map((m) => ({ x: m.data.x, y: m.data.y, r: rightEdge(m), b: bottomEdge(m) }));
+  const taken = [...nodes.values(), ...cards.values()].map((m) => ({ x: m.data.x, y: m.data.y, r: rightEdge(m), b: bottomEdge(m) }));
   const x0 = -view.x / view.scale + gap;
   const y0 = -view.y / view.scale + gap;
   for (let row = 0; row < 20; row++) {
@@ -2121,7 +2162,7 @@ $('add').addEventListener('click', openNew);
 // 프로젝트 바로 옆(오른쪽, 안 되면 아래) 빈자리. 둘 다 막혀 있으면 undefined → 아무 빈 칸.
 function groupSpot(list) {
   const [w, h] = NEW_SIZE, g = SNAP_GAP;
-  const free = (x, y) => [...nodes.values()].every((m) =>
+  const free = (x, y) => [...nodes.values(), ...cards.values()].every((m) =>
     x + w + g <= m.data.x || x >= rightEdge(m) + g || y + h + g <= m.data.y || y >= bottomEdge(m) + g);
   const right = Math.max(...list.map(rightEdge)) + g, top = Math.min(...list.map((n) => n.data.y));
   const left = Math.min(...list.map((n) => n.data.x)), bottom = Math.max(...list.map(bottomEdge)) + g;
@@ -2633,6 +2674,7 @@ const isMd = (abs) => /\.(md|markdown)$/i.test(abs);
 const sameFile = (a, b) => (isMac ? a === b : a.toLowerCase() === b.toLowerCase());
 
 function openViewer(n, abs, line) {
+  if (isCardFile(abs)) return openCard(abs); // PDF·이미지는 글자 탭 대신 보드 위 카드로
   const d = docs.find((x) => sameFile(x.abs, abs));
   if (d) d.line = line;
   else docs.push({ abs, line });
@@ -2672,12 +2714,14 @@ async function showDoc(abs) {
   const md = isMd(abs);
   $('docs').classList.toggle('split', md);
   $('doc-path').textContent = abs;
+  $('doc-ext').hidden = true;
   // 고치지 않은 탭은 열 때마다 다시 읽어 AI 가 고친 내용이 바로 보이게. 고치던 탭은 그대로 둔다.
   if (!d.cm || !docDirty(d)) {
     const r = await api.readFile(abs);
     if (docActive !== abs) return;
     if (r.error) {
       d.cm = null;
+      $('doc-ext').hidden = false; // 미리보기 못 하는 파일(큼·바이너리)은 OS 앱으로
       editor.swapDoc(CodeMirror.Doc(r.error));
       editor.setOption('readOnly', true);
       $('doc-md').replaceChildren();
@@ -2807,6 +2851,90 @@ addEventListener('drop', (e) => { if (osFiles(e)) e.preventDefault(); });
 // --- 프로젝트 사이드바: 저장소 > 브랜치·워크트리 > 열린 세션 ---
 
 const samePath = (a, b) => a.replace(/[\\/]+$/, '').toLowerCase() === b.replace(/[\\/]+$/, '').toLowerCase();
+
+// --- 문서 카드(PDF·이미지): 보드 위 읽기 전용 창 ---
+// 터미널을 가정한 코드(n.term·n.fit·협업·보내기)가 많아 nodes 와 따로 둔다. 미니맵·전체 보기·빈 칸 찾기에만 같이 든다.
+const isCardFile = (p) => /\.(pdf|png|jpe?g|gif|webp)$/i.test(p);
+const docSize = () => NEW_SIZE; // 새 세션 창과 같은 크기. 저장된 카드는 저장 크기 그대로
+const openExt = (abs) => api.openExternal(abs).then((r) => r?.error && toast(r.error, true), (err) => toast(err.message, true));
+
+async function openCard(abs) {
+  if (docActive) showDoc(null); // 글자 탭이 보드를 덮고 있으면 카드가 안 보인다
+  const old = [...cards.values()].find((c) => sameFile(c.data.path, abs));
+  if (old) return focusCard(old);
+  const r = await api.openDoc(abs).catch((err) => ({ error: err.message }));
+  if (r?.error || !r?.url) return toast(r?.error || tr('ui.doc.openFail'), true);
+  const [w, h] = docSize(abs);
+  focusCard(addCard({ id: `doc-${crypto.randomUUID()}`, path: abs, ...freeSpot(w, h), w, h }, r));
+}
+
+function addCard(data, doc) {
+  const name = basename(data.path);
+  const c = { data, el: el('div', 'node doc-card'), body: el('div', 'body') };
+  const head = el('div', 'head');
+  const title = el('span', 'where', name);
+  title.title = data.path;
+  const ext = el('button', 'doc-ext', tr('ui.doc.openExternal'));
+  ext.addEventListener('click', () => openExt(data.path));
+  const x = el('button', 'close', '×');
+  x.setAttribute('aria-label', tr('ui.doc.close', { name }));
+  x.addEventListener('click', () => { c.el.remove(); cards.delete(data.id); save(); });
+  head.append(title, ext, x);
+  head.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return;
+    // 세션 창과 같은 마그넷. Alt 를 누르면 끈다.
+    let rx = data.x, ry = data.y;
+    drag(e, (dx, dy, ev) => {
+      rx += dx / view.scale;
+      ry += dy / view.scale;
+      const s = ev.altKey ? { x: rx, y: ry } : snapTo(c, rx, ry);
+      data.x = s.x;
+      data.y = s.y;
+      placeCard(c);
+    });
+  });
+  c.el.append(head, c.body);
+  for (const d of ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']) {
+    const rz = el('div', `rz rz-${d}`);
+    rz.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      drag(e, (dx, dy) => { resizeBy(data, d, dx / view.scale, dy / view.scale, 240, 160); placeCard(c); });
+    });
+    c.el.append(rz);
+  }
+  c.el.addEventListener('pointerdown', () => { c.el.style.zIndex = ++topZ; });
+  boardEl.appendChild(c.el);
+  cards.set(data.id, c);
+  placeCard(c);
+  fillCard(c, doc);
+  save();
+  return c;
+}
+// 앱을 다시 켜면 main 의 등록이 비어 있어 복원 때마다 다시 등록한다(doc 없음). 파일이 없어졌으면 카드 안에 안내만.
+async function fillCard(c, doc) {
+  const r = doc ?? await api.openDoc(c.data.path).catch((err) => ({ error: err.message }));
+  if (r?.error || !r?.url) return c.body.replaceChildren(el('p', 'doc-msg', r?.error || tr('ui.doc.openFail')));
+  const v = r.type === 'application/pdf' ? el('iframe') : el('img');
+  v.src = v.tagName === 'IFRAME' ? `${r.url}#navpanes=0` : r.url; // 썸네일 칸은 기본으로 접는다
+  if (v.tagName === 'IMG') v.alt = basename(c.data.path); else v.title = basename(c.data.path);
+  c.body.replaceChildren(v);
+}
+function placeCard(c) {
+  const { x, y, w, h } = c.data;
+  Object.assign(c.el.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` });
+}
+function focusCard(c) {
+  const { x, y, w, h } = c.data;
+  view.x = viewport.clientWidth / 2 - (x + w / 2) * view.scale;
+  view.y = viewport.clientHeight / 2 - (y + h / 2) * view.scale;
+  applyView();
+  save();
+  c.el.style.zIndex = ++topZ;
+  c.el.classList.remove('flash');
+  void c.el.offsetWidth;
+  c.el.classList.add('flash');
+}
+$('doc-ext').addEventListener('click', () => docActive && openExt(docActive));
 
 function focusNode(n) {
   const { x, y, h } = n.data;
@@ -3297,12 +3425,17 @@ function tidy() {
   const gap = 40, projGap = 110, rowGap = 120;
   let x = gap, y = gap + 56, rowH = 0, prev = null;
   const maxW = Math.max(1200, (viewport.clientWidth / view.scale) * 1.5);
+  // 문서 카드는 옮기지 않고 세션 창이 피해 간다
+  const hit = (x, y, w, h) => [...cards.values()].find((c) => x < rightEdge(c) + gap && x + w + gap > c.data.x && y < bottomEdge(c) + gap && y + h + gap > c.data.y);
   for (const n of [...nodes.values()].sort((a, b) => projectOf(a).key.localeCompare(projectOf(b).key) || (a.data.cwd || '').localeCompare(b.data.cwd || ''))) {
     const { w } = n.data;
     const key = projectOf(n).key;
     if (prev !== null && key !== prev) x += projGap - gap;
     prev = key;
-    if (x > gap && x + w > maxW) { x = gap; y += rowH + rowGap; rowH = 0; }
+    for (let c; ; x = rightEdge(c) + gap) {
+      if (x > gap && x + w > maxW) { x = gap; y += rowH + rowGap; rowH = 0; }
+      if (!(c = hit(x, y, w, n.data.h + rackH(n)))) break;
+    }
     n.data.x = x;
     n.data.y = y;
     place(n);
@@ -3313,7 +3446,7 @@ function tidy() {
 }
 
 function bounds() {
-  const list = [...nodes.values()];
+  const list = [...nodes.values(), ...cards.values()];
   if (!list.length) return null;
   return {
     x: Math.min(...list.map((n) => n.data.x)),
@@ -3356,6 +3489,11 @@ function drawMinimap() {
     ctx.fillRect(x, y, n.data.w * s, n.data.h * s);
     const st = effectiveState(n);
     if (st) { ctx.strokeStyle = MINI_COLOR[st]; ctx.lineWidth = 1.5; ctx.strokeRect(x, y, n.data.w * s, n.data.h * s); }
+  }
+  ctx.fillStyle = '#7aa2f755'; // 문서 카드는 세션과 구분되게 파랗게
+  for (const c of cards.values()) {
+    const [x, y] = m(c.data.x, c.data.y);
+    ctx.fillRect(x, y, c.data.w * s, c.data.h * s);
   }
   const [x, y] = m(vx, vy);
   ctx.strokeStyle = '#f0c94a99';
@@ -3428,6 +3566,13 @@ addEventListener('focus', () => { if (!$('sidebar').hidden) refreshFolders(); })
     links = saved.links ?? [];
     groupColors = saved.groupColors ?? {};
     saved.nodes.forEach(addNode);
+    // 옛 보드엔 cards 가 없다. 손으로 고친 파일 대비로 경로가 글자인 것만.
+    // 좌표·크기가 빠졌으면 버리지 않고 기본 크기와 빈 칸을 준다 (NaN 이면 bounds·미니맵이 깨진다)
+    (Array.isArray(saved.cards) ? saved.cards : []).filter((d) => typeof d?.path === 'string' && d.id).forEach((d) => {
+      if (!Number.isFinite(d.w) || !Number.isFinite(d.h)) [d.w, d.h] = docSize(d.path);
+      if (!Number.isFinite(d.x) || !Number.isFinite(d.y)) Object.assign(d, freeSpot(d.w, d.h));
+      addCard(d);
+    });
     renderLinks();
   }
   applyView();

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Notification, clipboard, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, Notification, clipboard, dialog, shell, protocol, net } = require('electron');
 const http = require('http');
 const { execFile } = require('child_process');
 const path = require('path');
@@ -7,6 +7,7 @@ const os = require('os');
 const pty = require('@lydell/node-pty');
 const board = require('./lib/board');
 const codex = require('./lib/codex');
+const doc = require('./lib/doc');
 const { t } = require('./locales');
 
 // --smoke: 기본 보드로 띄워 스크린샷(%TEMP%\bimo-smoke.png)만 찍고 종료. 저장된 보드는 건드리지 않는다.
@@ -303,6 +304,12 @@ function createWindow() {
   // http(s) 새 창 요청은 기본 브라우저로 넘기고, 나머지는 전부 막는다.
   win.webContents.on('will-navigate', (e) => e.preventDefault());
   win.webContents.on('will-redirect', (e) => e.preventDefault());
+  // 하위 프레임(문서 카드 iframe)도 bimo-doc·PDF 뷰어 밖으로 못 나가게 한다. 메인 프레임은 위 will-navigate 가 막는다.
+  win.webContents.on('will-frame-navigate', (e) => {
+    if (e.isMainFrame || /^(bimo-doc:|chrome-extension:|about:blank$)/i.test(e.url)) return;
+    e.preventDefault();
+    if (/^https?:\/\//i.test(e.url)) require('electron').shell.openExternal(e.url);
+  });
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) require('electron').shell.openExternal(url);
     return { action: 'deny' };
@@ -786,6 +793,43 @@ ipcMain.handle('files:read', (e, file) => {
     return { error: err.message };
   }
 });
+// 문서 카드(PDF·이미지): 화면은 파일 경로 대신 bimo-doc://<id>/<이름> 만 받는다. id 는 doc:open 으로 등록한 파일만 가리킨다.
+// 실행마다 비어 있어 보드 복원 때 화면이 다시 등록한다. 큰 PDF 도 net.fetch(file:) 스트림으로 넘겨 메모리에 통째로 올리지 않는다.
+const docs = new Map(); // id → 경로
+protocol.registerSchemesAsPrivileged([{ scheme: 'bimo-doc', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
+const serveDoc = async (req) => {
+  const file = docs.get(doc.docId(req.url));
+  if (!file) return new Response('not found', { status: 404 });
+  try {
+    // Range 는 넘기지 않는다 — file: 은 부분만 주면서 200 을 돌려줘 뷰어가 헷갈린다. Accept-Ranges 를 안 보내니 뷰어도 통째로 받는다.
+    const res = await net.fetch(require('url').pathToFileURL(file).href);
+    return new Response(res.body, { status: res.status, headers: { 'content-type': doc.docType(file) } });
+  } catch {
+    return new Response('not found', { status: 404 }); // 등록 뒤 지워졌거나 옮겨진 파일
+  }
+};
+ipcMain.handle('doc:open', (e, file) => {
+  try {
+    if (typeof file !== 'string' || !doc.docType(file)) return { error: tr('main.doc.badType') };
+    if (!fs.statSync(file).isFile()) return { error: tr('main.files.notFile') };
+    const id = require('crypto').randomBytes(16).toString('hex');
+    docs.set(id, file);
+    return { url: doc.docUrl(id, file), type: doc.docType(file) };
+  } catch (err) {
+    return { error: err.code === 'ENOENT' ? tr('main.doc.missing') : err.message };
+  }
+});
+// 미리보기 못 하는 파일을 OS 기본 앱으로 연다. 허용 목록(lib/doc.js OPENABLE)에 있는 문서·미디어·압축만.
+ipcMain.handle('files:openExternal', async (e, file) => {
+  try {
+    if (typeof file !== 'string' || !doc.openable(file)) return { error: tr('main.doc.notOpenable') };
+    if (!fs.statSync(file).isFile()) return { error: tr('main.files.notFile') };
+    const err = await shell.openPath(file);
+    return err ? { error: err } : { ok: true };
+  } catch (err) {
+    return { error: err.code === 'ENOENT' ? tr('main.doc.missing') : err.message };
+  }
+});
 // 파일 트리 오른쪽 클릭 메뉴: 만들기·이름 바꾸기·휴지통·탐색기에서 보기. 프로젝트 폴더(root) 안에서만 한다.
 const insideRoot = (root, p) => {
   const r = path.relative(path.resolve(root), path.resolve(p));
@@ -871,6 +915,7 @@ ipcMain.on('board:save', (e, data) => {
 app.setAppUserModelId(require('./package.json').appId || 'io.github.gyun-hub.bimo');
 app.whenReady().then(() => {
   lang = app.getLocale().startsWith('ko') ? 'ko' : 'en';
+  protocol.handle('bimo-doc', serveDoc);
   hookServer.listen(0, '127.0.0.1', () => {
     hookPort = hookServer.address().port;
     createWindow();

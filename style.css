@@ -118,7 +118,11 @@ body.has-docs #viewport, #docs { top: 88px; }
 .doc-x:hover { background: #ffffff1f; color: var(--text); }
 #docs { position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; display: flex; flex-direction: column; background: var(--board); }
 #docs[hidden] { display: none; }
-.doc-bar { flex: none; padding: 6px 16px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-bar { flex: none; display: flex; align-items: center; gap: 10px; padding: 6px 16px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); }
+#doc-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-ext { flex: none; background: var(--raised); border: 0; border-radius: var(--r-xs); padding: 2px 10px; color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.doc-ext:hover { background: #2d3039; }
+.doc-ext[hidden] { display: none; }
 .doc-body { flex: 1; min-height: 0; display: flex; }
 #doc-code { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 #doc-md, .doc-split { display: none; }
@@ -273,7 +277,7 @@ body.side-open #viewport { left: var(--side-w, 300px); }
 /* V(선택): 화살표, 빈 곳을 끄는 동안만 쥔 손. H(이동): 어디서나 손 */
 body.panning #viewport, body.panning #viewport * { cursor: grabbing !important; }
 body.hand #viewport, body.hand #viewport .node, body.hand #viewport .xterm { cursor: grab; }
-body.ctrl:not(.hand) #viewport .node, body.ctrl:not(.hand) #viewport .xterm { cursor: copy; }
+body.ctrl:not(.hand) #viewport .node:not(.doc-card), body.ctrl:not(.hand) #viewport .xterm { cursor: copy; }
 /* 오른쪽 위: 단축키 안내 */
 #keys { position: absolute; right: 16px; top: 14px; z-index: 15; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 #keys-toggle { background: var(--surface); border: 0; border-radius: var(--r-sm); padding: 5px 10px; color: var(--muted); font-size: 12px; box-shadow: var(--e2); cursor: pointer; }
@@ -283,7 +287,7 @@ body.ctrl:not(.hand) #viewport .node, body.ctrl:not(.hand) #viewport .xterm { cu
 #keys-list dt { color: var(--text); white-space: nowrap; text-align: right; }
 #keys-list dd { margin: 0; color: var(--muted); }
 #keys kbd { display: inline-block; min-width: 18px; padding: 1px 6px; border-radius: var(--r-xs); background: var(--raised); box-shadow: inset 0 -1px 0 #0006, 0 0 0 1px #ffffff1a; color: var(--text); font: inherit; font-size: 11px; font-weight: 600; text-align: center; }
-/* 멀리 보기(배율 30% 이하): 프로젝트 영역을 그 색으로 반투명하게 덮고 이름을 크게 */
+/* 멀리 보기(배율 45% 이하): 프로젝트 영역을 그 색으로 반투명하게 덮고 이름을 크게 */
 #covers { position: absolute; left: 0; top: 0; z-index: 2147483000; pointer-events: none; }
 .group-cover { position: absolute; display: grid; place-items: center; overflow: hidden; border-radius: calc(22px * var(--inv, 1)); background: hsl(var(--hue) 50% 32% / .72); box-shadow: inset 0 0 0 calc(2px * var(--inv, 1)) hsl(var(--hue) 60% 62% / .7); opacity: 0; visibility: hidden; transition: opacity .2s, visibility .2s; }
 #board.far .group-cover { opacity: 1; visibility: visible; pointer-events: auto; cursor: grab; }
@@ -349,7 +353,10 @@ body.ctrl:not(.hand) #viewport .node, body.ctrl:not(.hand) #viewport .xterm { cu
 #toast[hidden] { display: none; }
 #toast::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--done); vertical-align: 1px; }
 #toast.bad::before { background: var(--fail); }
+#toast.copy { color: var(--signal); font-weight: 700; }
+#toast.copy::before { display: none; }
 #toast.show { animation: toast 2.6s var(--ease) forwards; }
+#toast.copy.show { animation-duration: 1.3s; }
 @keyframes toast { 0% { opacity: 0; transform: translate(-50%, 6px); } 8%, 85% { opacity: 1; transform: translate(-50%, 0); } 100% { opacity: 0; } }
 #mention-list { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); margin: 0; padding: 6px; list-style: none; max-height: 240px; overflow: auto; background: var(--surface); border-radius: var(--r-md); box-shadow: var(--e3); animation: pop .12s var(--ease); }
 #mention-list[hidden] { display: none; }
@@ -462,9 +469,6 @@ body.ctrl:not(.hand) #viewport .node, body.ctrl:not(.hand) #viewport .xterm { cu
 .node.st-working { --ring: 0 0 0 1.5px var(--fail); }
 .node.st-waiting { --ring: 0 0 0 1.5px var(--signal); }
 .node.st-idle { --ring: 0 0 0 1.5px var(--done); }
-.head .copied { font-size: 11.5px; color: var(--signal); opacity: 0; }
-.head .copied.show { animation: copied 1.2s var(--ease); }
-@keyframes copied { 0%, 70% { opacity: 1; } 100% { opacity: 0; } }
 .head .tokens { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .restart { display: none; background: var(--raised); border: 0; border-radius: var(--r-xs); padding: 2px 10px; font-size: 12px; cursor: pointer; }
 .restart:hover { background: #2d3039; }
@@ -491,6 +495,15 @@ body.ctrl:not(.hand) #viewport .node, body.ctrl:not(.hand) #viewport .xterm { cu
 .rz-nw { top: -4px; left: -4px; cursor: nwse-resize; } .rz-se { bottom: -4px; right: -4px; cursor: nwse-resize; }
 body.hand .rz { cursor: inherit; }
 .node.flash { animation: flash .9s var(--ease); }
+/* 문서 카드(PDF·이미지): 세션 창 틀을 그대로 쓰고 본문만 바꾼다. 끄는 중·H 모드엔 iframe 이 포인터를 가로채지 않게 */
+.doc-card .head .where { flex: 1; min-width: 0; color: var(--text); }
+.doc-card .body { padding: 0 6px 6px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.doc-card .body:has(iframe) { position: relative; }
+/* PDF 뷰어는 별도 프레임이라 보드 scale 에 맞춰 다시 그리지 않고 비트맵만 늘린다 → 배율(--zs)만큼 크게 그리고 거꾸로 줄여 화면 픽셀과 1:1. --zs 는 확대(>1)일 때만, 축소 때는 1 이라 보드와 같이 줄어든다. 위치는 .body 내용 칸(padding 0 6px 6px) 그대로 */
+.doc-card iframe { position: absolute; left: 6px; top: 0; width: calc((100% - 12px) * var(--zs, 1)); height: calc((100% - 6px) * var(--zs, 1)); transform: scale(calc(1 / var(--zs, 1))); transform-origin: 0 0; border: 0; border-radius: calc(var(--r-xs) * var(--zs, 1)); background: #fff; }
+.doc-card img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.doc-msg { color: var(--muted); font-size: 12.5px; padding: 16px; text-align: center; }
+body.dragging iframe, body.hand .doc-card iframe { pointer-events: none; }
 @keyframes flash { from { box-shadow: 0 0 0 3px var(--signal), var(--e3); } }
 
 /* 패치 케이블 — 이 앱의 시그니처. 굵기·플러그는 유지 */
