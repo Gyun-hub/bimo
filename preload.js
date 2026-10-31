@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('api', {
   onData: (cb) => ipcRenderer.on('pty:data', (_, id, data) => cb(id, data)),
   onExit: (cb) => ipcRenderer.on('pty:exit', (_, id, code) => cb(id, code)),
   onAgentEvent: (cb) => ipcRenderer.on('agent:event', (_, id, event) => cb(id, event)),
+  onAgentSession: (cb) => ipcRenderer.on('agent:session', (_, id, sessionId) => cb(id, sessionId)),
   platform: process.platform,
   getUsage: (agent) => ipcRenderer.invoke('usage:get', agent),
   detectAgents: () => ipcRenderer.invoke('agents:detect'),

@@ -132,6 +132,7 @@ const hookServer = http.createServer((req, res) => {
       // 사용자가 그 세션에서 직접 한 턴이 끝나도 오므로, 세션 요청 머리말이 든 턴만 대기를 끝낸다.
       if (event.type === 'agent-turn-complete') {
         if (codex.isCallTurn(event['input-messages'])) resolveWait(id, { last_assistant_message: event['last-assistant-message'] });
+        codexSession(id, codex.threadId(event));
         return res.writeHead(200, { 'Content-Type': 'application/json' }).end(reply);
       }
       if (event.hook_event_name === 'Stop' && !event.agent_id) resolveWait(id, event);
@@ -381,7 +382,8 @@ function hasTranscript(sessionId) {
 // 에이전트도 PowerShell 안에서 실행한다 — npm .cmd 심(codex, gemini)이 그대로 돌고, 종료 후 셸이 남는다.
 // claude 는 세션 id 를 앱이 정해서 띄우고, 다음 실행 때 그 id 로 이어한다.
 ipcMain.handle('pty:spawn', (e, { id, command, cwd, cols, rows, sessionId }) => {
-  if (!/^[\w-]{1,80}$/.test(id)) return tr('main.pty.badId');
+  if (!/^[\w-]{1,80}$/.test(id)) return { error: tr('main.pty.badId') };
+  const isCodex = command === 'codex', spawnAt = Date.now();
   const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
   const settings = hookSettings(id);
   // 경로에 ' 가 있어도(사용자 폴더 이름 등) 명령이 깨지지 않게 셸에 맞춰 감싼다
@@ -409,16 +411,20 @@ ipcMain.handle('pty:spawn', (e, { id, command, cwd, cols, rows, sessionId }) => 
     // BIMO_INBOX_CONPTY=1 은 비교 테스트용으로 기본 ConPTY 를 강제한다.
     const useConptyDll = !process.env.BIMO_INBOX_CONPTY;
     const p = pty.spawn(shell, args, { name: 'xterm-256color', cwd: dir, cols, rows, env: childEnv(), ...(isWin && { useConptyDll }) });
+    const entry = isCodex ? { at: spawnAt, cwd: dir, sid: resumeId } : null;
     p.onData((data) => send('pty:data', id, data));
     p.onExit(({ exitCode }) => {
       ptys.delete(id);
+      if (entry && codexNodes.get(id) === entry) codexNodes.delete(id); // 다시 띄운 새 엔트리는 남긴다
       waits.get(id)?.done({ error: '받는 세션이 종료돼 답을 받지 못했습니다.' });
       send('pty:exit', id, exitCode);
     });
     ptys.set(id, p);
+    if (entry) codexNodes.set(id, entry);
+    else codexNodes.delete(id);
     return cwd && dir !== cwd ? tr('main.pty.noCwd', { cwd }) : null;
   } catch (err) {
-    return tr('main.pty.failed', { error: err.message });
+    return { error: tr('main.pty.failed', { error: err.message }) };
   }
 });
 // xterm windowsPty.buildNumber: 번들 ConPTY 는 최신이라 OS 빌드(Win10=19045)가 아니라 최신 빌드로 알려야
@@ -699,6 +705,45 @@ function codexSessions() {
     id ??= path.basename(p).match(/[0-9a-f]{8}-[0-9a-f-]{27}/i)?.[0];
     return id && { agent: 'codex', id, cwd, title: title || '(첫 메시지 없음)', at };
   }).filter(Boolean);
+}
+
+// --- Codex 세션 id 기억: 앱을 껐다 켜도 codex resume <id> 로 이어 열게 화면에 알린다 ---
+// claude 는 앱이 id 를 정하지만 codex 는 스스로 정한다. 턴 끝 notify 의 thread-id 를 쓰고, 없으면 rollout 에서 찾는다.
+const codexNodes = new Map(); // 노드 id -> { at: spawn 시각, cwd, sid: 마지막으로 알린(또는 이어 연) id }
+async function codexSession(id, tid) {
+  const me = codexNodes.get(id);
+  if (!me || (!tid && me.sid)) return; // 이미 정한(또는 이어 연) 노드는 thread-id 로만 바꾼다 — rollout 을 다시 뒤지지 않는다
+  const sid = tid ?? await codexRolloutId(me, codex.takenSids(codexNodes, id)).catch(() => null);
+  if (!sid || sid === me.sid || codexNodes.get(id) !== me) return; // 그 사이 다시 띄웠으면 버린다
+  if (codex.takenSids(codexNodes, id).has(sid)) return; // thread-id 경로도, await 사이 남이 먼저 받은 것도 막는다
+  me.sid = sid;
+  send('agent:session', id, sid);
+}
+// rollout 은 비동기로, 첫 줄(session_meta)만 64KB 까지 읽는다 — 메인 스레드가 멈추면 모든 터미널 출력이 멈춘다.
+async function codexRolloutId({ at, cwd }, taken) {
+  const fsp = fs.promises;
+  const files = [];
+  const walk = async (dir, d) => {
+    const ents = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
+    await Promise.all(ents.map(async (ent) => {
+      const p = path.join(dir, ent.name);
+      if (ent.isDirectory() && d > 0) return walk(p, d - 1);
+      if (!ent.isFile() || !/^rollout-.*\.jsonl$/.test(ent.name)) return;
+      const m = (await fsp.stat(p).catch(() => null))?.mtimeMs;
+      if (m >= at) files.push({ p, at: m });
+    }));
+  };
+  await walk(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'sessions'), 3);
+  const cands = await Promise.all(files.map(async ({ p, at: m }) => {
+    const fh = await fsp.open(p, 'r').catch(() => null);
+    if (!fh) return null;
+    try {
+      const buf = Buffer.alloc(64 * 1024);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+      return { ...codex.rolloutMeta(buf.toString('utf8', 0, bytesRead)), at: m };
+    } finally { await fh.close(); }
+  }));
+  return codex.pickRollout(cands.filter(Boolean), { cwd, since: at, taken });
 }
 
 // Cursor CLI 대화: chats/<폴더 해시>/<대화 id>/meta.json 에 title·cwd·updatedAtMs (2026-10 맥 실측).

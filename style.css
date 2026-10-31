@@ -102,6 +102,9 @@ body.os-darwin #launcher { padding-left: 80px; }
 .gm-sess:hover { background: var(--hover); }
 .gm-title { font-size: 13px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .gm-meta { color: var(--muted); font-size: 11.5px; }
+/* + 메뉴의 AI 줄(아이콘 + 이름), 사이드바 세션 목록(7개 높이로 스크롤) */
+.gm-agent { gap: 8px; }
+.gm-list { width: 320px; max-height: calc(7 * 44px); overflow-y: auto; margin: 0; padding: 0; list-style: none; }
 .gm-none { padding: 10px; color: var(--muted); font-size: 12.5px; }
 
 /* 파일 탭 화면: 헤더 아래 탭 줄 + 보드 자리를 덮는 파일 보기 */
@@ -276,7 +279,8 @@ body.side-open #viewport { left: var(--side-w, 300px); }
 #board { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 /* V(선택): 화살표, 빈 곳을 끄는 동안만 쥔 손. H(이동): 어디서나 손 */
 body.panning #viewport, body.panning #viewport * { cursor: grabbing !important; }
-body.hand #viewport, body.hand #viewport .node, body.hand #viewport .xterm { cursor: grab; }
+/* .xterm * 까지: 출력이 흐르며 링크가 마우스 밑을 지나가면 xterm 이 .xterm-cursor-pointer 를 붙였다 떼 손 커서가 깜빡였다 */
+body.hand #viewport, body.hand #viewport .node, body.hand #viewport .xterm, body.hand #viewport .xterm * { cursor: grab; }
 body.ctrl:not(.hand) #viewport .node:not(.doc-card), body.ctrl:not(.hand) #viewport .xterm { cursor: copy; }
 /* 오른쪽 위: 단축키 안내 */
 #keys { position: absolute; right: 16px; top: 14px; z-index: 15; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
@@ -475,7 +479,8 @@ body.ctrl:not(.hand) #viewport .node:not(.doc-card), body.ctrl:not(.hand) #viewp
 .node.exited .restart { display: inline; }
 .head { position: relative; z-index: 4; height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 14px; background: #ffffff05; border-radius: var(--r-lg) var(--r-lg) 0 0; cursor: grab; user-select: none; }
 .head:active { cursor: grabbing; }
-.head .agent { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.head .agent { font-size: 12.5px; font-weight: 600; color: var(--muted); cursor: pointer; border-radius: var(--r-xs); padding: 0 3px; margin: 0 -3px; }
+.head .agent:hover { background: #ffffff12; color: var(--text); }
 .node.focused .head .agent { color: var(--text); }
 .head .where { color: var(--muted); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .head .ended { display: none; font-size: 11px; color: var(--muted); background: #ffffff0d; border-radius: 999px; padding: 0 8px; }

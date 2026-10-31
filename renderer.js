@@ -1,6 +1,6 @@
 // 감지할 AI CLI. 설치된 것만 런처에 버튼으로 나온다. PowerShell 은 항상.
 const AGENTS = [
-  ['claude', 'Claude Code'], ['codex', 'Codex'], ['gemini', 'Gemini'], ['qwen', 'Qwen Code'], ['opencode', 'OpenCode'],
+  ['claude', 'Claude Code'], ['codex', 'Codex (GPT)'], ['gemini', 'Gemini'], ['qwen', 'Qwen Code'], ['opencode', 'OpenCode'],
   ['aider', 'Aider'], ['cursor-agent', 'Cursor'], ['copilot', 'Copilot'], ['amp', 'Amp'],
 ];
 const LABELS = { '': 'PowerShell', ...Object.fromEntries(AGENTS) };
@@ -392,16 +392,16 @@ function setFocused(n) {
   n.el.style.zIndex = ++topZ;
   // 나를 기다리던 세션을 열어 보면 확인한 것으로 친다
   if (n.state === 'waiting') setState(n, n.waitKind === 'permission' ? 'working' : 'idle');
+  // 트리 맞추기는 여기서 하지 않는다 — insertPaths 등이 부르면 사이드바에서 펴 둔 다른 프로젝트 트리가 바뀐다.
+  // 사용자가 카드를 직접 누를 때(addNode pointerdown)와 enterSession·focusNode 에서만 syncFilesTo 를 부른다.
   if (focused === n) return;
-  // 다른 세션으로 옮길 때만 트리를 바꾼다. 같은 세션 터미널을 눌러도 [파일 보기]로 연 다른 폴더 트리는 그대로 둔다.
-  syncFilesTo(n);
   focused?.el.classList.remove('focused');
   focused = n;
   n.el.classList.add('focused');
 }
 // 파일 탭을 보고 있으면 그 세션의 프로젝트 트리로 바꾼다
 function syncFilesTo(n) {
-  if (!$('sidebar').hidden && !$('side-files').hidden && n.data.cwd && n.data.cwd !== fx.root) openFiles(n.data.cwd);
+  if (!$('sidebar').hidden && !$('side-files').hidden && n.data.cwd && !(fx.root && samePath(n.data.cwd, fx.root))) openFiles(n.data.cwd);
 }
 
 // --- 세션 상태: 빨강 = 일하는 중, 노랑 = 나를 기다림(답 옴·권한 요청), 초록 = 대기 ---
@@ -751,6 +751,14 @@ async function addNode(data) {
   const node = el('div', 'node');
   node.innerHTML = `<div class="head"><span class="agent"></span><span class="where"></span><span class="tokens"></span><span class="ended">${tr('ui.node.ended')}</span><button class="restart">${tr('ui.node.restart')}</button><button class="files-btn icon-btn" title="${tr('ui.node.filesTitle')}" aria-label="${tr('ui.node.files')}"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="close" aria-label="${tr('ui.node.close')}">×</button><button class="link-state"><span class="link-label"></span><span class="link-list"></span></button></div><div class="body"></div>${['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].map((d) => `<div class="rz rz-${d}" data-dir="${d}"></div>`).join('')}<div class="port" title="${tr('ui.node.port')}"></div>${critterHtml(pickCritter())}`;
   node.querySelector('.agent').textContent = LABELS[data.command] ?? data.command;
+  node.querySelector('.agent').title = tr('ui.node.switchAgent');
+  // 카드 안에서 다른 CLI 를 직접 치면 Bimo 가 모른다(훅·세션 id 없음) → 이름을 눌러 그 AI 로 다시 실행 (2026-10-31 사용자 버그)
+  node.querySelector('.agent').addEventListener('click', (e) => {
+    if (n.dragMoved) return;
+    const key = `agent:${data.id}`;
+    if (groupMenuFor === key) return closeGroupMenu();
+    showMenu(key, [el('div', 'gm-label', tr('ui.node.switchAgent')), ...agentItems((c) => switchAgent(n, c), true)], e.currentTarget);
+  });
   node.querySelector('.where').textContent = data.name;
   node.querySelector('.where').title = `${data.cwd || tr('ui.home')}\n${tr('ui.node.renameHint')}`;
   node.querySelector('.where').addEventListener('dblclick', () => renameSession(n));
@@ -789,14 +797,17 @@ async function addNode(data) {
   fit.fit(); // pty 를 처음부터 맞는 크기로 띄우도록 바로 한 번
   save();
 
-  node.addEventListener('pointerdown', () => setFocused(n));
+  // 직접 누르면 이미 고른 세션이어도 트리를 이 세션 폴더로 되돌린다 (2026-10-31 사용자 요청, 10-28 "B" 보완)
+  node.addEventListener('pointerdown', () => { syncFilesTo(n); setFocused(n); });
   setFocused(n);
   paintLinkStates();
   node.querySelector('.head').addEventListener('pointerdown', (e) => {
     if (e.target.closest('button')) return;
     // 마그넷: 끌던 위치(raw)는 따로 쌓고, 다른 세션 가장자리 근처면 거기에 붙인다. Alt 를 누르면 끈다.
     let rx = data.x, ry = data.y;
+    n.dragMoved = false; // 끈 뒤의 click 은 AI 이름 메뉴를 열지 않는다
     drag(e, (dx, dy, ev) => {
+      if (dx || dy) n.dragMoved = true;
       rx += dx / view.scale;
       ry += dy / view.scale;
       const s = ev.altKey ? { x: rx, y: ry } : snapTo(n, rx, ry);
@@ -827,6 +838,7 @@ async function addNode(data) {
     links = links.filter((l) => l.a !== data.id && l.b !== data.id);
     queueMicrotask(renderLinks); // 노드를 지운 뒤 남은 세션들의 연결 표시를 고친다
     stopWander(n);
+    clearTimeout(n.switchTimer);
     n.rack?.querySelectorAll('.agent-card').forEach((card) => cardResize.unobserve(card));
     api.kill(data.id);
     term.dispose();
@@ -973,15 +985,19 @@ async function addNode(data) {
   });
   const start = async () => {
     const warn = await api.spawn({ id: data.id, command: data.command, cwd: data.cwd, cols: term.cols, rows: term.rows, sessionId: data.sessionId });
-    if (warn) term.write(`\x1b[33m${warn}\x1b[0m\r\n`);
+    if (warn) term.write(`\x1b[33m${warn.error ?? warn}\x1b[0m\r\n`);
+    // 실행 실패({ error })면 pty 가 없다 → 끝난 카드로 둔다(AI 바꾸기·다시 시작이 exit 를 기다리지 않게)
+    if (warn?.error) { n.exited = true; node.classList.add('exited'); paintState(n); }
   };
-  node.querySelector('.restart').addEventListener('click', () => {
+  n.restart = () => {
+    if (n.switching) return; // AI 바꾸는 중엔 onExit 가 띄운다
     n.exited = false;
     node.classList.remove('exited');
     term.write(`\r\n\x1b[90m[${tr('ui.node.restart')}]\x1b[0m\r\n`);
     setState(n, null);
     start();
-  });
+  };
+  node.querySelector('.restart').addEventListener('click', n.restart);
   renderTokens(n);
   await start();
 }
@@ -1624,10 +1640,52 @@ api.onExit((id, code) => {
   n.el.classList.add('exited');
   n.exited = true;
   paintState(n);
-  if (!n.agents) return;
-  for (const a of n.agents.values()) finish(a, 'stopped');
-  renderRack(n);
+  if (n.agents) {
+    for (const a of n.agents.values()) finish(a, 'stopped');
+    renderRack(n);
+  }
+  // AI 바꾸기: 옛 pty 가 끝난 뒤에 띄운다(먼저 띄우면 옛 onExit 가 같은 id 의 새 pty 를 지운다)
+  const after = n.afterExit;
+  n.afterExit = null;
+  clearTimeout(n.switchTimer);
+  n.switching = false;
+  after?.();
 });
+// main 이 알아낸 대화 id(Codex 등). 다음 실행 때 이어 연다. 형식 검사·중복 방지는 main 이 한다.
+api.onAgentSession((id, sessionId) => {
+  const n = nodes.get(id);
+  // 바꾸는 중·이미 다른 AI 로 바꾼 카드에 늦게 온 옛 Codex id 를 붙이지 않는다
+  if (!n || n.switching || n.data.command !== 'codex') return;
+  n.data.sessionId = sessionId;
+  save();
+});
+// 카드 머리 AI 이름 메뉴: 같은 카드·같은 자리에서 다른 AI 로 다시 실행한다. 지금 대화는 끝나고 새 대화로 시작한다.
+async function switchAgent(n, c) {
+  if (n.switching || c === n.data.command) return; // 바꾸는 중(kill~exit) 겹치면 이중 spawn
+  if (effectiveState(n) === 'working' && !await confirmBox(tr('ui.node.switchTitle'), tr('ui.node.switchText', { name: n.data.name, agent: LABELS[c] }), tr('ui.node.switchOk'))) return;
+  if (!nodes.has(n.data.id) || n.switching) return; // 확인하는 사이 닫혔거나 다른 바꾸기가 시작됐으면
+  const prev = { command: n.data.command, sessionId: n.data.sessionId };
+  n.data.command = c;
+  delete n.data.sessionId;
+  if (c === 'claude') n.data.sessionId = crypto.randomUUID(); // addNode 와 같은 규칙
+  n.el.querySelector('.agent').textContent = LABELS[c] ?? c;
+  save();
+  if (n.exited) return n.restart();
+  n.switching = true;
+  n.afterExit = n.restart;
+  // exit 가 안 오면 영영 못 띄운다 → 포기하고 되돌린다. 강제 spawn 은 안 한다(늦게 온 옛 onExit 가 새 pty 를 지운다)
+  n.switchTimer = setTimeout(() => {
+    if (!nodes.has(n.data.id)) return; // 기다리는 사이 닫힌 카드
+    n.switching = false;
+    n.afterExit = null;
+    Object.assign(n.data, prev);
+    if (prev.sessionId === undefined) delete n.data.sessionId;
+    n.el.querySelector('.agent').textContent = LABELS[prev.command] ?? prev.command;
+    save();
+    toast(tr('ui.node.switchFail'), true);
+  }, 3000);
+  api.kill(n.data.id);
+}
 api.onAgentEvent((id, e) => {
   const n = nodes.get(id);
   if (n) onHook(n, e);
@@ -1932,6 +1990,14 @@ api.appVersion().then((v) => {
 // 업데이트 뒤 처음 켜면 바뀐 점 목록. "닫기" 는 다음에 켤 때 또 뜨고, "다시 보지 않기" 는 이 버전에서 다시 안 뜬다.
 // 버전을 올릴 때 맨 위에 한 덩어리 추가한다.
 const CHANGES = [
+  { v: '1.2.1', items: [
+    { ko: '+ 를 누르면 깔린 AI(Claude Code·Codex·PowerShell 등) 중에서 골라 실행합니다.', en: 'Clicking + now lets you pick which installed AI (Claude Code, Codex, PowerShell, …) to start.' },
+    { ko: '사이드바 프로젝트에 [세션 목록] 버튼이 생겼습니다. 그 프로젝트에서 했던 대화를 골라 이어 엽니다.', en: 'Sidebar projects have a new [Sessions] button to reopen past conversations from that project.' },
+    { ko: 'Codex (GPT) 세션도 앱을 다시 켜면 하던 대화로 이어 열립니다.', en: 'Codex (GPT) sessions now resume the same conversation after restarting the app.' },
+    { ko: '세션 머리의 AI 이름을 누르면 그 세션을 다른 AI 로 바꿔 다시 실행합니다.', en: 'Click the AI name on a session header to restart it with a different AI.' },
+    { ko: '파일 트리가 멈추던 문제와, 세션을 눌러도 그 폴더로 돌아오지 않던 문제를 고쳤습니다.', en: 'Fixed the file tree freezing and not returning to the session folder when you click a session.' },
+    { ko: 'Space 를 꾹 눌러 이동할 때 커서가 깜빡이던 문제를 고쳤습니다.', en: 'Fixed the cursor flickering while holding Space to pan.' },
+  ] },
   { v: '1.2.0', items: [
     { ko: 'PDF·이미지(png·jpg·gif·webp)를 보드 위 카드로 엽니다. 세션 창처럼 끌고 크기를 바꿀 수 있고, 다시 켜도 남습니다. 확대해도 PDF 글자가 선명합니다.', en: 'PDFs and images (png, jpg, gif, webp) now open as cards on the board. Drag and resize them like session windows; they stay after restart, and PDF text stays sharp when zoomed in.' },
     { ko: '미리보기 못 하는 큰 파일·바이너리는 [OS 앱으로 열기]로 엽니다. 실행 파일은 열지 않습니다.', en: 'Files too large or not text to preview can be opened with [Open in default app]. Executables are never opened.' },
@@ -1950,64 +2016,6 @@ const CHANGES = [
   { v: '1.0.0', items: [
     '이름이 Bimo 로 바뀌고 새 아이콘(B + 커서)이 생겼습니다.',
     'GitHub 에 공개했습니다. 업데이트도 GitHub Releases 에서 받습니다.',
-  ] },
-  { v: '0.2.6', items: [
-    '왼쪽 파일 트리에서 오른쪽 클릭 메뉴: 열기, 새 파일·새 폴더, 이름 바꾸기(F2), 휴지통으로 삭제, 경로·상대 경로 복사, 탐색기에서 보기, 세션에 @경로 보내기. 프로젝트 폴더 안에서만 하고, 삭제는 휴지통으로 보내 되살릴 수 있습니다.',
-    '앱 종료 확인 문구를 바꿨습니다: "종료할까요? 세션은 종료되지 않고 다음에 켜면 이어서 열립니다."',
-    '파일 화면에서 바로 고칠 수 있습니다. Ctrl+S 로 저장하고, 저장하지 않은 탭에는 ● 가 붙습니다. 연 뒤 AI 등이 파일을 고쳤으면 덮어쓸지 먼저 묻습니다.',
-    '파일 화면에서 Ctrl+F 로 찾기(Enter 다음, Shift+Enter 이전), Ctrl+H 로 바꾸기. .md 는 고치는 대로 오른쪽 해석이 따라 바뀝니다.',
-  ] },
-  { v: '0.2.5', items: [
-    '머리의 버전 글자를 누르면 바뀐 점 창과 함께 업데이트도 바로 확인합니다 (0.2.3 에서 빠졌던 기능).',
-    '픽셀 캐릭터가 Claude 뿐 아니라 모든 세션(Codex·Cursor·PowerShell 등)에 뜹니다.',
-    '협업 버튼이 파란색이 되었습니다 (협업 중이면 초록).',
-    '협업 버튼에 마우스를 올렸을 때 뜨는 목록이 터미널에 가려지던 문제를 고쳤습니다.',
-    'Codex 남은 사용량이 실제와 어긋나던 문제를 고쳤습니다: 초기화 시각이 지난 한도는 0% 로 보이고, codex 를 새로 열어 아직 대화하지 않았을 때도 이전 사용량을 보여 주며, 1분마다 새로 읽습니다. 언제 기준인지(몇 분 전)도 함께 보입니다.',
-  ] },
-  { v: '0.2.4', items: [
-    '서브 에이전트가 세션 창 바로 아래에 카드로 붙습니다. 카드마다 그 서브 에이전트가 한 생각·쓴 도구·결과가 실시간으로 쌓이고, 도구 호출·결과를 누르면 전체가 펼쳐집니다.',
-    '서브 에이전트 카드는 테두리·모서리를 끌어 크기를 바꿀 수 있고, [간략히] 스위치로 한 줄씩만 볼 수도 있습니다.',
-    'Claude 세션 캐릭터가 넷(프롬프트 박스·말랑 슬라임·병아리·꼬마 유령)으로 바뀌었습니다. 일할 때·나를 부를 때·응답이 끝났을 때·쉴 때 캐릭터마다 다르게 움직입니다. [단축키] 패널에서 하나로 고정할 수 있습니다. (헤드셋·안경 등 소품은 새 캐릭터에 맞춰 다시 그릴 때까지 빠집니다.)',
-    '새 세션 창이 더 크게 열립니다 (1040×660).',
-    '새 응답 목록에 마우스를 올렸을 때 입력칸이 아니라 위쪽으로 옮겨 가던 문제를 고쳤습니다.',
-    '모드를 바꾸면 화면 가운데에 [H 이동 모드] / [V 선택 모드] 가 잠깐 떴다가 사라집니다.',
-    'Claude 남은 사용량 보기는 이제 [단축키] 패널에서 켜야 보입니다 (공개되지 않은 API 를 쓰기 때문). 쓰던 분은 한 번 켜 주세요.',
-    '보안: 파일 화면의 마크다운이나 링크로 앱 창이 다른 페이지로 넘어가지 않게 막았고, 세션 연결용 내부 통신에 실행마다 바뀌는 열쇠를 붙였습니다.',
-  ] },
-  { v: '0.2.3', items: [
-    'Claude 세션 창 위에 픽셀 캐릭터가 삽니다. 헤드셋·안경·왕관 등 10가지 소품 중 하나를 켤 때마다 무작위로 씁니다. 일할 때는 걸어다니고, 답이 오면 폴짝폴짝, 쉴 때는 꾸벅꾸벅 좁니다. 단축키 패널에서 끌 수 있습니다.',
-    '처음 신뢰한 폴더에서 연 세션도 사이드바 프로젝트 목록에 바로 나옵니다.',
-    '오른쪽 파일 서랍이 왼쪽 사이드바의 [파일] 탭으로 옮겨졌습니다. 고른 세션의 프로젝트 트리가 나옵니다.',
-    '파일을 누르거나 터미널 경로를 Ctrl+클릭하면 헤더 아래 탭으로 쌓이며 보드 자리에 크게 열립니다. × 로 닫기 전까지 탭이 남고, [보드] 탭으로 터미널 화면에 돌아갑니다.',
-    '마크다운(.md) 파일은 왼쪽 원문, 오른쪽 해석(표·목록·코드)으로 나눠 보여 줍니다.',
-    '사이드바 세션 로고에 마우스를 올리면 그 세션 입력칸으로 잠깐 옮겨 가고, 누르면 이동합니다.',
-    '새 응답이 AI 로고와 세션 이름으로 위에서부터 한 줄씩 쌓입니다(최신이 위). 마우스를 올리면 그 세션 입력칸이 보이는 자리로 옮겨 갑니다.',
-    '머리의 버전 글자를 누르면 버전별 바뀐 점을 언제든 볼 수 있습니다.',
-    '입력한 프롬프트를 한 번에 지웁니다: Windows Alt+Backspace, Mac ⌘+Backspace. 여러 줄도 통째로 지워집니다.',
-    '새 응답이 천천히 깜빡여 눈에 잘 띕니다. 마우스를 올리면 멈춥니다.',
-  ] },
-  { v: '0.2.2', items: [
-    '다른 세션을 보는 동안 응답이 끝났거나 권한을 묻는 세션이 보드 위쪽 가운데에 AI 기호와 함께 모입니다. 마우스를 올리면 화면이 그 세션 입력칸으로 잠깐 옮겨 가고(100%), 누르면 그 세션으로 갑니다. 5개 이상이면 "+N" 을 눌러 나머지를 봅니다.',
-    'Claude 세션에 캡처 이미지를 붙여 넣는 속도가 빨라졌습니다 (약 0.8초 → 0.2초).',
-    '바뀐 점 창을 버전별로 좌우로 넘겨 볼 수 있습니다.',
-    '세션 창 안의 파일 경로를 Ctrl+클릭하면 세션 고르기가 아니라 파일 열기가 됩니다.',
-    '업데이트 뒤에도 작업 표시줄 고정이 풀리지 않습니다. 이번 업데이트 뒤 한 번만 다시 고정해 주세요.',
-    '파일 서랍이 .gitignore 에 걸린 파일(*.md 등)도 흐리게 보여 주고 이름 찾기에도 나옵니다. node_modules·build 같은 무거운 폴더는 그대로 숨깁니다.',
-  ] },
-  { v: '0.2.1', items: [
-    '캡처한 이미지를 붙여 넣을 수 있습니다 (Ctrl+V, Shift+Insert, 오른쪽 클릭). Claude 는 이미지로, 다른 AI 는 파일 경로로 받습니다.',
-    '터미널에 나온 파일 경로를 Ctrl+클릭(맥 ⌘+클릭)하면 큰 창으로 엽니다. 줄 번호가 있으면 그 줄을 표시합니다. 두 줄로 꺾인 경로와 Claude 가 건 링크도 됩니다.',
-    '파일 서랍 미리보기에 "크게 보기" 버튼이 생겼습니다.',
-    '탐색기에서 파일을 끌어와 세션 창에 놓으면 @경로 가 들어가고, 빈 곳에 놓으면 큰 창으로 엽니다.',
-    '세션 이름을 50자까지 쓸 수 있고, 바꾼 이름은 세션 가져오기 목록에서 보이고 검색됩니다.',
-    '세션 창 머리 어디를 잡아도 옮길 수 있습니다.',
-  ] },
-  { v: '0.2.0', items: [
-    '자동 업데이트: 새 버전을 알아서 받고, "다시 시작" 을 누르면 적용됩니다. 머리의 버전 글자를 누르면 바로 확인합니다.',
-    '파일 서랍: 프로젝트 파일 트리, git 변경 표시, 검색, 코드 색이 입혀진 미리보기. 파일을 세션 창에 끌어 놓으면 @경로.',
-    '사이드바: 프로젝트 폴더 추가, 별칭으로 묶기와 묶음 색, 세션 상태 불빛, 폭 조절.',
-    '보드: 네 변과 모서리로 크기 조절, 가까이 대면 붙는 정렬, 프로젝트 이름을 끌어 함께 옮기기, 프로젝트 + 메뉴와 전체 종료.',
-    '새 세션 창 (Ctrl+N), 앱 종료 확인 창.',
   ] },
 ];
 // 버전 하나가 한 장. 좌우 버튼·점·←/→ 키로 넘긴다. 첫 장 = 지금 버전.
@@ -2151,11 +2159,11 @@ function freeSpot(w, h) {
 
 // 새 세션 창 크기. Claude Code 입력창·표가 줄바꿈 없이 들어가는 너비(약 110칸)
 const NEW_SIZE = [1040, 660];
-function launch(dir, spot) {
+function launch(dir, spot, agent = cmd) {
   const [w, h] = NEW_SIZE;
   spot ??= freeSpot(w, h);
   const id = crypto.randomUUID();
-  addNode({ id, command: cmd, cwd: dir, ...spot, w, h }).then(() => nodes.has(id) && focusNode(nodes.get(id)));
+  addNode({ id, command: agent, cwd: dir, ...spot, w, h }).then(() => nodes.has(id) && focusNode(nodes.get(id)));
 }
 $('add').addEventListener('click', openNew);
 
@@ -2169,15 +2177,51 @@ function groupSpot(list) {
   return free(right, top) ? { x: right, y: top } : free(left, bottom) ? { x: left, y: bottom } : undefined;
 }
 
-// 프로젝트 이름표 옆 [+] 메뉴: 새 세션 / 세션 가져오기(이 프로젝트에서 했던 대화, 7개 높이로 스크롤)
+// 프로젝트 이름표 옆 [+] 메뉴: 새 세션(깔린 AI 중 고르기) / 세션 가져오기(이 프로젝트에서 했던 대화, 7개 높이로 스크롤)
+// 사이드바 폴더 줄의 [+]·[세션 목록] 도 같은 #group-menu 를 쓴다.
 const projectKeyOfPath = (p) => (p ? (folders.find((x) => samePath(x.path, p))?.worktreeOf || p).replace(/[\\/]+$/, '').toLowerCase() : '');
 let groupMenuFor = null;
-function openGroupMenu(key, name, list, anchor) {
+const availAgents = () => [...AGENTS.filter(([c]) => installed.includes(c)).map(([c]) => c), ''];
+// 깔린 AI + PowerShell. 고르면 그 AI 로 실행하고 다음 기본값(헤더 cmd)도 그걸로 바꾼다(keepCmd 면 그대로 — 카드 AI 바꾸기).
+function agentItems(run, keepCmd) {
+  return availAgents().map((c) => {
+    const b = el('button', 'gm-item gm-agent');
+    b.dataset.agent = c;
+    b.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">${glyphOf(c)}</svg>`; // 고정 아이콘만
+    b.append(el('span', null, LABELS[c]));
+    b.addEventListener('click', () => {
+      closeGroupMenu();
+      if (!keepCmd) { cmd = c; pref.set('cmd', cmd); renderAgentPick(); }
+      run(c);
+    });
+    return b;
+  });
+}
+// 버튼 아래에 두되 화면 밖으로 나가면 오른쪽·위로 당긴다. r 은 연 순간의 버튼 자리(사이드바 버튼은 마우스가 떠나면 숨는다).
+function placeMenu(r) {
+  const menu = $('group-menu'), h = menu.offsetHeight;
+  const top = r.bottom + 6 + h > innerHeight ? Math.max(8, r.top - h - 6) : r.bottom + 6;
+  Object.assign(menu.style, { left: `${Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8))}px`, top: `${top}px` });
+}
+function showMenu(key, parts, anchor) {
   closeGroupMenu();
   groupMenuFor = key;
-  const menu = $('group-menu');
-  const neu = el('button', 'gm-item', tr('ui.menu.new', { agent: LABELS[cmd] ?? cmd }));
-  neu.addEventListener('click', () => { closeGroupMenu(); launch(list[0].data.cwd, groupSpot(list)); });
+  $('group-menu').replaceChildren(...parts);
+  $('group-menu').hidden = false;
+  const r = anchor.getBoundingClientRect();
+  placeMenu(r);
+  return r;
+}
+const projectSessions = (key) => api.listSessions().catch(() => [])
+  .then((all) => (all ?? []).filter((s) => projectKeyOfPath(s.cwd) === key).sort((a, b) => b.at - a.at));
+// at: 누를 때 자리를 정하는 함수(없으면 아무 빈 칸)
+function sessRow(s, at) {
+  const li = el('li', 'gm-sess');
+  li.append(el('span', 'gm-title', nameOfSession(s.agent, s.id) ?? s.title), el('span', 'gm-meta', `${LABELS[s.agent] ?? s.agent}, ${openOnBoard(s) ? tr('ui.onBoard') : ago(s.at)}`));
+  li.addEventListener('click', () => { closeGroupMenu(); openImported(s, at?.()); });
+  return li;
+}
+function openGroupMenu(key, name, list, anchor) {
   const imp = el('button', 'gm-item gm-has-sub', tr('ui.import'));
   const sub = el('ul', 'gm-sub');
   sub.hidden = true;
@@ -2190,28 +2234,36 @@ function openGroupMenu(key, name, list, anchor) {
   };
   imp.addEventListener('pointerenter', showSub);
   imp.addEventListener('click', showSub);
-  menu.replaceChildren(neu, imp, sub);
-  const r = anchor.getBoundingClientRect();
-  Object.assign(menu.style, { left: `${r.left}px`, top: `${r.bottom + 6}px` });
-  menu.hidden = false;
-  api.listSessions().then((all) => {
+  showMenu(key, [el('div', 'gm-label', tr('ui.menu.newLabel')), ...agentItems((c) => launch(list[0].data.cwd, groupSpot(list), c)), el('div', 'gm-sep'), imp, sub], anchor);
+  projectSessions(key).then((mine) => {
     if (groupMenuFor !== key) return;
-    const mine = all.filter((s) => projectKeyOfPath(s.cwd) === key).sort((a, b) => b.at - a.at);
     if (!mine.length) return sub.replaceChildren(el('li', 'gm-none', tr('ui.menu.noHistory', { name })));
-    sub.replaceChildren(...mine.map((s) => {
-      const open = openOnBoard(s);
-      const li = el('li', 'gm-sess');
-      li.append(el('span', 'gm-title', nameOfSession(s.agent, s.id) ?? s.title),el('span', 'gm-meta', `${LABELS[s.agent] ?? s.agent}, ${open ? tr('ui.onBoard') : ago(s.at)}`));
-      li.addEventListener('click', () => { closeGroupMenu(); openImported(s, groupSpot(list)); });
-      return li;
-    }));
+    sub.replaceChildren(...mine.map((s) => sessRow(s, () => groupSpot(list))));
+  });
+}
+// 사이드바 폴더 줄 [+]: 고를 AI 가 하나(PowerShell 만)면 메뉴 없이 바로 연다
+function openSideNew(f, anchor) {
+  const avail = availAgents();
+  if (avail.length === 1) return launch(f.path, undefined, cmd); // AI 감지 전(installed=[])이면 저장된 기본 AI 유지
+  showMenu(`new:${f.path}`, [el('div', 'gm-label', tr('ui.menu.newLabel')), ...agentItems((c) => launch(f.path, undefined, c))], anchor);
+}
+// 사이드바 폴더 줄 [세션 목록]: 이 프로젝트(워크트리 포함)에서 했던 대화, 최신순
+function openSideSessions(f, name, anchor) {
+  const key = `sess:${f.path}`;
+  const ul = el('ul', 'gm-list');
+  ul.append(el('li', 'gm-none', tr('ui.loading')));
+  const r = showMenu(key, [el('div', 'gm-label', tr('ui.side.sessions')), ul], anchor);
+  projectSessions(projectKeyOfPath(f.path)).then((mine) => {
+    if (groupMenuFor !== key) return;
+    ul.replaceChildren(...(mine.length ? mine.map((s) => sessRow(s)) : [el('li', 'gm-none', tr('ui.menu.noHistory', { name }))]));
+    placeMenu(r);
   });
 }
 function closeGroupMenu() {
   groupMenuFor = null;
   $('group-menu').hidden = true;
 }
-addEventListener('pointerdown', (e) => { if (groupMenuFor != null && !e.target.closest('#group-menu, .group-add')) closeGroupMenu(); }, true);
+addEventListener('pointerdown', (e) => { if (groupMenuFor != null && !e.target.closest('#group-menu, .group-add, .wt-new, .wt-sessions, .node .agent')) closeGroupMenu(); }, true);
 addEventListener('keydown', (e) => { if (e.key === 'Escape' && groupMenuFor != null) closeGroupMenu(); });
 
 // --- 세션 가져오기: 다른 터미널에서 했던 Claude·Codex·Cursor 대화를 보드에서 이어 열기 ---
@@ -2343,17 +2395,19 @@ const dirChanged = (abs) => {
 async function openFiles(dir) {
   if (!dir) return toast(tr('ui.files.homeNo'), true);
   if ($('sidebar').hidden) setSidebar(true);
+  const same = !!fx.root && samePath(fx.root, dir);
+  // root 를 탭 전환보다 먼저 정한다. 비어 있으면 setSideTab 이 다시 openFiles 를 불러 끝없이 돈다(스택 넘침 + git 호출 수천 번).
+  if (!same) Object.assign(fx, { root: dir, top: null, changes: {}, open: new Set(), cache: new Map(), active: null });
   setSideTab('files');
-  if (fx.root === dir) return;
-  Object.assign(fx, { root: dir, top: null, changes: {}, open: new Set(), cache: new Map(), active: null });
+  if (same) return;
   $('files-title').textContent = basename(dir);
   $('files-meta').textContent = dir;
   $('files-search').value = '';
   $('files-only-changed').checked = false;
   $('files-tree').replaceChildren();
-  const st = await api.gitChanges(dir);
+  const st = await api.gitChanges(dir).catch(() => ({})); // git 조회가 실패해도 트리는 그린다
   if (fx.root !== dir) return;
-  Object.assign(fx, { top: st.top, changes: st.changes });
+  Object.assign(fx, { top: st.top ?? null, changes: st.changes ?? {} });
   $('files-only-changed').disabled = !st.top;
   renderFiles();
 }
@@ -2412,7 +2466,7 @@ function fileRow(abs, name, depth, isDir, sub) {
 }
 
 async function treeRows(dir, depth) {
-  if (!fx.cache.has(dir)) fx.cache.set(dir, await api.listDir(dir));
+  if (!fx.cache.has(dir)) fx.cache.set(dir, await api.listDir(dir).catch((e) => ({ error: e.message })));
   const ents = fx.cache.get(dir);
   if (ents.error) return [el('div', 'f-none', tr('ui.files.readFail', { error: ents.error }))];
   const rows = [];
@@ -2943,6 +2997,7 @@ function focusNode(n) {
   view.y = viewport.clientHeight / 2 - (y + h / 2) * view.scale;
   applyView();
   save();
+  syncFilesTo(n); // 사용자가 직접 옮겨 가는 길(목록·미니맵·Ctrl+숫자·가져오기)은 트리도 따라간다
   setFocused(n);
   n.el.classList.remove('flash');
   void n.el.offsetWidth; // 같은 노드를 연달아 눌러도 애니메이션이 다시 돌게 리플로우
@@ -3143,6 +3198,7 @@ function projectGroup(key, name, rows, sessions, repo) {
   return proj;
 }
 
+const SESSIONS_ICON = '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5a4.5 4.5 0 1 1-4.2 2.9M8 5.5V8l1.8 1.2M1.8 4.5l2 1.9 1.9-2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 function folderRow(f, label, badge, sessions, repo, branch, aliasable) {
   const row = el('div', 'wt');
   row.tabIndex = 0;
@@ -3180,9 +3236,20 @@ function folderRow(f, label, badge, sessions, repo, branch, aliasable) {
     rm.addEventListener('click', (e) => { e.stopPropagation(); removeCustomDir(f.path); });
     actions.append(rm);
   }
+  if (f.path) {
+    const sb = el('button', 'icon-btn wt-sessions');
+    sb.innerHTML = SESSIONS_ICON;
+    sb.title = tr('ui.side.sessions');
+    sb.setAttribute('aria-label', sb.title);
+    sb.setAttribute('aria-haspopup', 'menu');
+    sb.addEventListener('click', (e) => { e.stopPropagation(); groupMenuFor === `sess:${f.path}` ? closeGroupMenu() : openSideSessions(f, label, sb); });
+    actions.append(sb);
+  }
   const add = el('button', 'icon-btn wt-new', '+');
-  add.title = tr('ui.side.runHere', { agent: LABELS[cmd] });
-  add.addEventListener('click', (e) => { e.stopPropagation(); launch(f.path); });
+  add.title = availAgents().length > 1 ? tr('ui.side.newHere') : tr('ui.side.runHere', { agent: LABELS[cmd] });
+  add.setAttribute('aria-label', add.title);
+  add.setAttribute('aria-haspopup', 'menu');
+  add.addEventListener('click', (e) => { e.stopPropagation(); groupMenuFor === `new:${f.path}` ? closeGroupMenu() : openSideNew(f, add); });
   actions.append(add);
   row.append(el('i', 'state'), main, actions);
   if (sessions.length) {
