@@ -301,6 +301,8 @@ body.ctrl:not(.hand) #viewport .node:not(.doc-card), body.ctrl:not(.hand) #viewp
 /* 같은 프로젝트 세션 묶음 */
 #groups { position: absolute; left: 0; top: 0; }
 .group-frame { position: absolute; border: 2px solid hsl(var(--hue) 55% 62% / .55); border-radius: 22px; background: hsl(var(--hue) 55% 55% / .06); }
+/* 이름표·모두 닫기는 세션 위(맨 위 세션 캐릭터에 가려지지 않게), 멀리 보기 덮개(#covers) 아래 */
+.group-tag, .group-close { z-index: 2147482999; }
 .group-tag { position: absolute; left: 16px; top: 6px; display: flex; align-items: center; gap: 6px; }
 .group-add { width: 28px; height: 28px; border: 0; border-radius: 50%; background: hsl(var(--hue) 60% 50% / .3); color: hsl(var(--hue) 100% 94%); font-size: 18px; font-weight: 600; line-height: 1; cursor: pointer; box-shadow: 0 0 0 1px hsl(var(--hue) 60% 65% / .5); }
 .group-add:hover { background: hsl(var(--hue) 60% 50% / .55); }
@@ -370,7 +372,7 @@ body.ctrl:not(.hand) #viewport .node:not(.doc-card), body.ctrl:not(.hand) #viewp
 .m-meta { color: var(--muted); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .head .rename { flex: 1; min-width: 0; background: var(--board); border: 0; border-radius: var(--r-xs); box-shadow: inset 0 0 0 1px var(--signal); color: var(--text); font: inherit; font-size: 12px; padding: 3px 8px; outline: none; }
 .head .rename.bad { box-shadow: inset 0 0 0 1px var(--fail); }
-.head .where { flex: 0 1 auto; margin-right: auto; }
+.head .where { flex: 0 100 auto; margin-right: auto; } /* 좁으면 경로가 먼저 다 줄고 그다음 이름(.agent) */
 
 /* 프로젝트 사이드바 */
 .side-resize { position: absolute; top: 0; right: -3px; bottom: 0; width: 6px; cursor: ew-resize; z-index: 1; }
@@ -479,7 +481,7 @@ body.ctrl:not(.hand) #viewport .node:not(.doc-card), body.ctrl:not(.hand) #viewp
 .node.exited .restart { display: inline; }
 .head { position: relative; z-index: 4; height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 14px; background: #ffffff05; border-radius: var(--r-lg) var(--r-lg) 0 0; cursor: grab; user-select: none; }
 .head:active { cursor: grabbing; }
-.head .agent { font-size: 12.5px; font-weight: 600; color: var(--muted); cursor: pointer; border-radius: var(--r-xs); padding: 0 3px; margin: 0 -3px; }
+.head .agent { font-size: 12.5px; font-weight: 600; color: var(--muted); cursor: pointer; border-radius: var(--r-xs); padding: 0 3px; margin: 0 -3px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; } /* 좁은 종료 세션에서 버튼·닫기가 카드 밖으로 밀리지 않게 이름 쪽이 줄어든다 */
 .head .agent:hover { background: #ffffff12; color: var(--text); }
 .node.focused .head .agent { color: var(--text); }
 .head .where { color: var(--muted); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -649,7 +651,12 @@ body.rack-brief .crz { display: none; }
 .f-none { padding: 8px; color: var(--muted); }
 /* 코드 색 (어두운 배경용) */
 .node.file-drop { outline: 2px solid var(--signal); outline-offset: 4px; }
-.head .files-btn { flex: none; }
+.head .files-btn, .head .critter-btn { flex: none; }
+body.no-critters .critter-btn { display: none; }
+.gm-critter { gap: 8px; }
+.gm-critter svg { width: 22px; height: auto; flex: none; }
+.gm-critter[aria-current] { color: var(--signal); font-weight: 600; }
+.gm-critter[aria-current]::after { content: '✓'; margin-left: auto; }
 @keyframes slide { from { opacity: 0; transform: translateX(12px); } }
 .msg-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg.user { align-self: flex-end; max-width: 88%; background: var(--raised); border-radius: var(--r-md) var(--r-md) var(--r-xs) var(--r-md); padding: 8px 12px; }
@@ -674,10 +681,12 @@ body.rack-brief .crz { display: none; }
 body.no-critters .critter { display: none; }
 .cr-move { position: absolute; left: 0; bottom: 0; }
 .cr-body svg { display: block; }
+.cr-body svg rect { pointer-events: auto; cursor: grab; } /* 그려진 픽셀만 잡을 수 있다(누르면 반응, 끌면 잡힘). 투명 칸은 아래 터미널·이름표로 통과 */
+body.cr-grabbing, body.cr-grabbing * { cursor: grabbing !important; }
 .keys-opt { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 #opt-critter-kind { background: var(--panel, #1b1d23); color: inherit; border: 1px solid #3a3f4b; border-radius: 6px; padding: 2px 6px; font: inherit; }
 .critter.left .cr-move { transform: scaleX(-1); }
-.critter[data-kind="box"].left .cr-move { transform: none; } /* 화면 글자(얼굴)가 거울처럼 뒤집히지 않게 */
+.critter[data-kind="box"].left .cr-move, .critter[data-kind="robot"].left .cr-move { transform: none; } /* 화면 글자(얼굴)가 거울처럼 뒤집히지 않게 */
 .critter.gone .cr-body { filter: grayscale(1) opacity(.5); }
 /* 몸의 움직임 (캐릭터·기분마다 renderer 가 하나를 붙인다) */
 .cr-body.bob { animation: cr-bob .9s steps(1) infinite; }
@@ -694,13 +703,39 @@ body.no-critters .critter { display: none; }
 @keyframes cr-wobble { 0%, 100% { transform: scale(1, 1); } 25% { transform: scale(1.08, .92); } 50% { transform: scale(.94, 1.06); } 75% { transform: scale(1.04, .96); } }
 @keyframes cr-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
 @keyframes cr-boo { 40% { transform: scale(1.35) translateY(-4px); } 100% { transform: scale(1.2) translateY(-2px); } }
+/* 축하 동작 후보(빙글 춤·짧은 통통·도리도리)와 눌렀을 때 깜짝 */
+.cr-body.spin { animation: cr-spin 1.2s steps(1) infinite; }
+.cr-body.clap { animation: cr-clap .6s ease-out infinite; transform-origin: 50% 100%; }
+.cr-body.shake { animation: cr-shake 1s ease-in-out infinite; transform-origin: 50% 100%; }
+.critter.grabbed .cr-body { animation: cr-dangle .5s ease-in-out infinite; transform-origin: 50% 0; } /* 잡힌 동안 위쪽 가운데를 축으로 대롱대롱 */
+@keyframes cr-dangle { 0%, 100% { transform: rotate(-8deg); } 50% { transform: rotate(8deg); } }
+/* 착지: --drop(px, 음수) 위에서 가속 낙하 → 발밑 기준 철푸덕 → 원래대로. --fade 0 = 투명하게 나타나며(종류 바꿀 때) */
+.critter.landing .cr-body { animation: cr-land .9s linear; transform-origin: 50% 100%; }
+@keyframes cr-land { 0% { opacity: var(--fade, 1); transform: translateY(var(--drop, 0px)); animation-timing-function: cubic-bezier(.55, 0, 1, .45); } 35% { opacity: 1; transform: translateY(0) scale(1.35, .55); animation-timing-function: ease-out; } 55% { transform: scale(.9, 1.1); } 75% { transform: scale(1.04, .96); } 100% { transform: none; } }
+/* 클릭 반응(1.4초) */
+.cr-body.pk-bigjump { animation: pk-bigjump 1.4s ease-out; transform-origin: 50% 100%; }
+.cr-body.pk-shake { animation: pk-shake 1.4s ease-in-out; transform-origin: 50% 100%; }
+.cr-body.pk-slosh { animation: pk-slosh 1.4s ease-in-out; transform-origin: 50% 100%; }
+.cr-body.pk-hop { animation: pk-hop 1.4s ease-out; transform-origin: 50% 100%; }
+@keyframes pk-bigjump { 0% { transform: scale(1.15, .8); } 12% { transform: scale(.9, 1.12); } 40% { transform: translateY(-30px) scale(.95, 1.05); } 68% { transform: translateY(0) scale(1.15, .85); } 82% { transform: scale(.97, 1.03); } 100% { transform: none; } }
+@keyframes pk-shake { 0%, 100% { transform: rotate(0); } 12% { transform: rotate(-10deg); } 30% { transform: rotate(9deg); } 48% { transform: rotate(-7deg); } 66% { transform: rotate(5deg); } 84% { transform: rotate(-2deg); } }
+@keyframes pk-slosh { 0%, 100% { transform: none; } 15% { transform: rotate(-6deg) scale(1.04, .96); } 35% { transform: rotate(5deg); } 55% { transform: rotate(-3deg); } 75% { transform: rotate(2deg); } }
+@keyframes pk-hop { 0%, 50%, 100% { transform: none; } 18% { transform: translateY(-14px) scale(.95, 1.05); } 32% { transform: scale(1.08, .92); } 66% { transform: translateY(-8px); } 84% { transform: scale(1.04, .96); } }
+@keyframes cr-spin { 0% { transform: none; } 25% { transform: scaleX(-1) translateY(-4px); } 50% { transform: translateY(-1px); } 75% { transform: scaleX(-1) translateY(-4px); } }
+@keyframes cr-clap { 0%, 100% { transform: translateY(0) scale(1.06, .94); } 40% { transform: translateY(-6px) scale(.96, 1.04); } }
+@keyframes cr-shake { 0%, 50%, 100% { transform: rotate(0); } 20% { transform: rotate(-9deg); } 70% { transform: rotate(9deg); } }
 /* 효과: 하트·z·땀방울·말풍선·반짝이 */
 .cr-fx { position: absolute; font-weight: 700; }
+.critter.left:not([data-kind="box"], [data-kind="robot"]) .cr-fx { scale: -1 1; } /* .cr-move 가 좌우 반전될 때 효과 글자는 다시 뒤집어 바로 보이게 */
 .cr-fx.heart { color: #ff6fa5; font-size: 12px; animation: cr-rise 2.4s ease-out forwards; }
 .cr-fx.spark { color: #f2c94c; font-size: 11px; animation: cr-rise 2s ease-out forwards; }
 .cr-fx.zz { color: var(--muted); font: 700 12px/1 'Cascadia Mono', Consolas, monospace; animation: cr-zz 3.4s ease-out forwards; }
 .cr-fx.drop { width: 4px; height: 6px; background: #8fd3ff; border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%; animation: cr-drip 2.8s ease-in forwards; }
-.cr-fx.bubble { background: #e8ecf3; color: #1b1d23; font: 700 11px/1.4 system-ui, sans-serif; padding: 0 6px; border-radius: 6px; animation: cr-pop .35s ease-out; }
+.cr-fx.bubble { background: #e8ecf3; color: #1b1d23; font: 700 13px/1.4 system-ui, sans-serif; padding: 1px 8px; border-radius: 8px; white-space: nowrap; animation: cr-pop .35s ease-out; }
+.cr-fx.petal { color: #ff6fa5; font-size: 12px; animation: cr-rise 2s ease-out forwards; }
+.cr-fx.blub { color: #9fd8f5; font-size: 12px; animation: cr-rise 2.2s ease-out forwards; }
+.cr-fx.dust { width: 36px; height: 6px; border-radius: 50%; background: radial-gradient(#c9ced8aa, transparent 70%); animation: cr-dust .5s ease-out forwards; }
+@keyframes cr-dust { from { opacity: 1; transform: scaleX(.5); } to { opacity: 0; transform: scaleX(1.5) translateY(-3px); } }
 @keyframes cr-rise { 0% { opacity: 0; transform: translate(0, 0) scale(.6); } 15% { opacity: 1; } 100% { opacity: 0; transform: translate(var(--dx), -38px) scale(1.1); } }
 @keyframes cr-zz { 0% { opacity: 0; transform: translate(0, 0); } 30% { opacity: 1; } 100% { opacity: 0; transform: translate(10px, -20px); } }
 @keyframes cr-drip { 0% { opacity: 0; transform: translateY(0); } 20% { opacity: 1; } 100% { opacity: 0; transform: translateY(14px); } }

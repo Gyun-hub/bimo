@@ -262,8 +262,8 @@ function syncRoster() {
   api.setRoster(roster, links);
 }
 
-api.onCallStart((c) => { activeCalls.set(c.callId, c); renderLinks(); });
-api.onCallEnd((id) => { activeCalls.delete(id); renderLinks(); });
+api.onCallStart((c) => { activeCalls.set(c.callId, c); renderLinks(); critterMeet(c); });
+api.onCallEnd((id) => { const c = activeCalls.get(id); activeCalls.delete(id); renderLinks(); if (c) critterMeet(c, true); });
 
 // 세션 이름 바꾸기: 헤더 이름 더블클릭 → 입력칸. Enter 저장, Esc 취소. 다른 세션과 같은 이름은 안 된다.
 function renameSession(n) {
@@ -323,16 +323,23 @@ function uniqueName(base) {
   for (let i = 2; ; i++) if (!taken.has(`${base} ${i}`)) return `${base} ${i}`;
 }
 
-function drag(e, onMove, onEnd) {
+// onEnd(done): done = 정상 pointerup 이면 true, 취소(pointercancel·창 blur)면 false. noSave = 저장할 데이터가 없는 끌기.
+function drag(e, onMove, onEnd, noSave) {
   e.preventDefault();
   document.body.classList.add('dragging'); // 끄는 동안 문서 카드 iframe 이 포인터를 가로채지 않게
   let lx = e.clientX, ly = e.clientY;
   const move = (ev) => { onMove(ev.clientX - lx, ev.clientY - ly, ev); lx = ev.clientX; ly = ev.clientY; };
-  // pointercancel(터치·창 전환 등)으로 끝나도 같이 정리해 body.dragging 이 남지 않게
-  const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', up); document.body.classList.remove('dragging'); onEnd?.(); save(); };
+  // pointercancel(터치)·창 blur(포커스를 잃으면 pointerup 이 안 온다)로 끝나도 같이 정리해 body.dragging·리스너가 남지 않게
+  const up = (ev) => {
+    removeEventListener('pointermove', move); removeEventListener('pointerup', up); removeEventListener('pointercancel', up); removeEventListener('blur', up);
+    document.body.classList.remove('dragging');
+    onEnd?.(ev?.type === 'pointerup');
+    if (!noSave) save();
+  };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
   addEventListener('pointercancel', up);
+  addEventListener('blur', up);
 }
 
 // 크기 조절 한 걸음(보드 좌표). 왼쪽·위로 늘리면 위치도 같이 옮겨 반대편이 제자리에 있게 한다.
@@ -559,7 +566,7 @@ function renderTokens(n) {
 }
 
 // --- 세션 창 위 픽셀 캐릭터(모든 세션, 귀여움용) ---
-// 네 캐릭터(프롬프트 박스·말랑 슬라임·병아리·꼬마 유령) 중 하나가 세션마다 나온다. 기분(세션 상태)마다 고유한 동작:
+// 여덟 캐릭터(프롬프트 박스·말랑 슬라임·병아리·꼬마 유령·고양이·꼬마 로봇·선인장 화분·금붕어) 중 하나가 세션마다 나온다. 기분(세션 상태)마다 고유한 동작:
 //   일하는 중 = 산책, 나를 기다림(권한 요청) = 부르기, 응답 끝 = 기뻐하기, 대기 = 졸기, 종료 = 회색으로 졸기.
 // 그림은 글자 지도(한 글자 = 한 칸, '.' = 빈칸)로 그리고 0.45초마다 장면을 바꾼다. 가로 위치는 wander 가 정한다.
 const CR_PX = 5;
@@ -618,10 +625,80 @@ const GHOST = {
 };
 const ghostBoo = (t) => t % 12 >= 8;
 
-// frame(기분, 박자, 걷는 중) → [지도, 색], motion = 몸에 붙일 움직임, fx = 그 박자에 띄울 효과, look = 서서 좌우를 두리번
+// 고양이(오른쪽을 본다): 꼬리를 흔들며 걷고, 끝나면 기지개, 대기면 웅크린다
+const CAT_PAL = { O: '#f0a35e', d: '#c97a3a', e: '#1b1b1b', p: '#f4a7b9', w: '#fbe3c8' };
+const catRows = (eyes, wag, step) => {
+  const tail = wag === 'up' ? ['.O.', '.O.', '.O.'] : wag ? ['..O', '.O.', '.O.'] : ['O..', 'O..', '.O.']; // up = 꼬리 세움(눌렀을 때)
+  return [
+    wag === 'up' ? '.O.....O...O.' : '.......O...O.',
+    `${tail[0]}....O${eyes === 'happy' ? 'eOe' : 'OOO'}O.`, // 웃는 눈 = 한 칸 위로
+    `${tail[1]}....O${eyes === 'happy' ? 'OOO' : eyes === 'sleep' ? 'dOd' : 'eOe'}O.`,
+    `${tail[2]}....OOpOO.`,
+    '.OOOOOOOOOO..',
+    '.OdOdOdOOOO..',
+    '.OOOwwwwOOO..',
+    step ? '..O.O..O.O...' : '.O.O....O.O..',
+  ];
+};
+const CAT = {
+  curl: ['.............', '.............', '.............', '.......O...O.', '.......OOOOO.', '.OOOOOOOdOdO.', 'OOdOdOOOOpOO.', 'OOOOOOOOOOOO.'],
+  stretch: ['.............', 'O............', 'O............', '.OOOO........', '.OdOdOO.O...O', '.OOOOOOOOOOOO', '.O..OOOOOeOeO', '.O.OOOOOOOpOO'],
+};
+
+// 꼬마 로봇: 안테나 불빛·화면 글자 색 = 상태, 바퀴살이 돌며 굴러간다
+const ROBOT_FACE = {
+  eyes: ['SSSSSS', 'SgSSgS', 'SSSSSS'],
+  wow: ['SgSSgS', 'SgSSgS', 'SSSSSS'],
+  check: ['SSSSgS', 'gSSgSS', 'SggSSS'],
+  sleep: ['SSSSSS', 'ggSSgg', 'SSSSSS'],
+};
+const robotRows = (face, roll) => {
+  const f = ROBOT_FACE[face];
+  return ['.....aa.....', '.....DD.....', '..MMMMMMMM..', `..M${f[0]}M..`, `DDM${f[1]}MDD`, `..M${f[2]}M..`, '..MMMMMMMM..',
+    ...(roll ? ['..WWw..WWw..', '..wWW..wWW..'] : ['..wWW..wWW..', '..WWw..WWw..'])];
+};
+const ROBOT_LIGHT = { working: '#7ee787', waiting: '#67e8f9', done: '#f2c94c', idle: '#7c8696', exited: '#7c8696' };
+const robotPal = (a, g) => ({ a, g, D: '#5b6577', M: '#b8c4d6', S: '#1e2a3d', W: '#3a4150', w: '#8a94a6' });
+
+// 선인장 화분: 걷지 않는다(stay). 일하면 꽃봉오리가 자라고, 끝나면 꽃이 피고, 대기면 팔이 처진다
+const CACTUS_PAL = { C: '#5fbf6a', c: '#3f8f4a', s: '#e8f5d0', e: '#1b1b1b', P: '#c9774a', p: '#9c5636', b: '#ff9fc4', f: '#ff6fa5', y: '#f6d365' };
+const CACTUS_DULL = { ...CACTUS_PAL, C: '#8aa86a', c: '#5f7a4a' };
+const CACTUS_TOP = {
+  grow: [['............', '............'], ['............', '.....bb.....'], ['.....bb.....', '.....bb.....']],
+  bloom: ['.....ff.....', '....fyyf....'],
+};
+const cactusRows = (top, eyes, droop, cheek = 'CCCC') => [
+  ...top,
+  '....CsCC....',
+  droop ? `....${eyes}....` : `.C..${eyes}..C.`,
+  droop ? `....${cheek}....` : `.C..${cheek}..C.`,
+  '.CCCCCCCCCC.',
+  droop ? '.C..CCsC..C.' : '....CCsC....',
+  '..pppppppp..',
+  '...PPPPPP...',
+  '...PPPPPP...',
+];
+
+// 금붕어 어항: 걷지 않는다(stay). 일하면 어항 안을 좌우로 헤엄, 권한 요청이면 유리에 붙어 뻐끔, 끝나면 뛰어오르고, 대기면 바닥에 가라앉는다
+const FISH_PAL = { r: '#cde8f7', G: '#8fc3e6', W: '#2f6f9f', s: '#9fd8f5', S: '#d9c08a', F: '#f08c2e', f: '#ffb35c', e: '#1b1b1b', b: '#e8f7ff' };
+const BOWL = ['...rrrrrrrr...', '..G........G..', '.GsWWWWWWWWWG.', 'GWWWWWWWWWWWWG', 'GWWWWWWWWWWWWG', 'GWWWWWWWWWWWWG', 'GWWWWWWWWWWWWG', '.GWWWWWWWWWWG.', '.GSSSSSSSSSSG.', '..GGGGGGGGGG..'];
+// 물고기(오른쪽을 본다, 5×3)를 어항 위 (x, y) 에 찍는다. wag = 꼬리 흔듦, eye = 눈 칸, bubble = [x, y] 거품 한 칸
+const fishRows = (x, y, left, wag, eye = 'e', bubble) => {
+  const rows = BOWL.map((r) => [...r]);
+  const fish = [wag ? '.fFF.' : 'f.FF.', `fFF${eye}F`, wag ? '.fFF.' : 'f.FF.'];
+  fish.forEach((r, dy) => [...r].forEach((ch, dx) => { if (ch !== '.') rows[y + dy][left ? x + 4 - dx : x + dx] = ch; }));
+  if (bubble) rows[bubble[1]][bubble[0]] = 'b';
+  return rows.map((r) => r.join(''));
+};
+const FISH_JUMP = [4, 2, 0, 1, 3, 4];
+
+// frame(기분, 박자, 걷는 중) → [지도, 색], motion = 몸에 붙일 움직임(배열이면 그 기분에 들어올 때 하나를 무작위로),
+// fx = 그 박자에 띄울 효과, look = 서서 좌우를 두리번, stay = 산책하지 않음, land = 착지 한마디(locales 키),
+// poke = 눌렀을 때 1.4초 반응 { frame(t), anim(몸 클래스), fx: [클래스, 글자, 개수], say(locales 키) }. 없으면 POKE_HAPPY
 const CRITTERS = {
   box: {
     name: tr('ui.critter.box'),
+    land: 'ui.critter.land.box',
     frame(mood, t, walking) {
       if (mood === 'working') {
         const [l, r] = t % 40 > 32 ? (t % 80 > 40 ? ['o', 'o'] : ['^', '^']) : ['>', ' '];
@@ -631,19 +708,21 @@ const CRITTERS = {
       if (mood === 'done') { const m = t % 8 < 4 ? '!' : '^'; return [boxRows(m, m, true), boxPal('#f2c94c')]; }
       return [boxRows('-', '-', t % 8 < 4), boxPal('#7c8696')];
     },
-    motion: { working: 'bob', waiting: 'hop', done: 'bigjump', idle: '' },
+    motion: { working: 'bob', waiting: 'hop', done: ['bigjump', 'spin', 'clap'], idle: '' },
     fx: { idle: (t) => t % 10 === 0 && ['zz', 'z', 62, 38] },
   },
   slime: {
     name: tr('ui.critter.slime'),
+    land: 'ui.critter.land.slime',
     frame: (mood) => [mood === 'done' ? SLIME.happy : mood === 'idle' || mood === 'exited' ? SLIME.droop : SLIME.normal, SLIME_PAL],
-    motion: { working: 'hop', waiting: 'bigjump', done: 'wobble', idle: '' },
+    motion: { working: 'hop', waiting: 'bigjump', done: ['wobble', 'spin', 'clap'], idle: '' },
     fx: { idle: (t) => t % 8 === 0 && ['drop', '', 54, 26] },
   },
   chick: {
     name: tr('ui.critter.chick'),
+    land: 'ui.critter.land.chick',
     frame: (mood, t, walking) => [chickRows(mood === 'done' ? 'happy' : mood === 'idle' || mood === 'exited' ? 'sleep' : 'open', walking && t % 2), CHICK_PAL],
-    motion: { working: '', waiting: 'hop', done: 'hop', idle: '' },
+    motion: { working: '', waiting: 'hop', done: ['hop', 'spin', 'shake'], idle: '' },
     fx: {
       done: (t) => t % 2 === 0 && ['heart', '♥', 10 + Math.random() * 40, 40 + Math.random() * 10],
       idle: (t) => t % 10 === 0 && ['zz', 'z', 56, 42],
@@ -652,34 +731,102 @@ const CRITTERS = {
   },
   ghost: {
     name: tr('ui.critter.ghost'),
+    land: 'ui.critter.land.ghost',
     frame(mood, t) {
       if (mood === 'waiting' && ghostBoo(t)) return [GHOST.boo, GHOST_PAL];
       if (mood === 'done') return [GHOST.happy, GHOST_PAL];
       if (mood === 'idle' || mood === 'exited') return [GHOST.sleep, GHOST_PAL];
       return [t % 4 < 2 ? GHOST.normal : GHOST.wave, GHOST_PAL];
     },
-    motion: { working: 'float', waiting: (t) => (ghostBoo(t) ? 'boo' : 'float'), done: 'float', idle: 'ghosty' },
+    motion: { working: 'float', waiting: (t) => (ghostBoo(t) ? 'boo' : 'float'), done: ['float', 'spin'], idle: 'ghosty' },
     fx: {
       waiting: (t) => t % 12 === 8 && ['bubble', tr('ui.critter.boo'), 52, 52],
       done: (t) => t % 3 === 0 && ['spark', '✦', Math.random() * 60, 30 + Math.random() * 20],
       idle: (t) => t % 10 === 0 && ['zz', 'z', 60, 46],
     },
   },
+  cat: {
+    name: tr('ui.critter.cat'),
+    land: 'ui.critter.land.cat',
+    frame(mood, t, walking) {
+      if (mood === 'idle' || mood === 'exited') return [CAT.curl, CAT_PAL];
+      if (mood === 'done') return [t % 6 < 3 ? CAT.stretch : catRows('happy', t % 2), CAT_PAL];
+      return [catRows('open', mood === 'working' && t % 2, walking && t % 2), CAT_PAL];
+    },
+    motion: { working: '', waiting: '', done: ['', 'clap'], idle: '' },
+    fx: {
+      waiting: (t) => t % 10 === 4 && ['bubble', tr('ui.critter.meow'), 50, 42],
+      done: (t) => t % 4 === 0 && ['heart', '♥', 30 + Math.random() * 30, 34],
+      idle: (t) => t % 10 === 0 && ['zz', 'z', 60, 30],
+    },
+    look: { waiting: true },
+    poke: { frame: () => [catRows('happy', 'up'), CAT_PAL], anim: 'pk-bigjump', fx: ['heart', '♥', 3], say: 'ui.critter.poke.cat' },
+  },
+  robot: {
+    name: tr('ui.critter.robot'),
+    land: 'ui.critter.land.robot',
+    frame(mood, t, walking) {
+      const c = ROBOT_LIGHT[mood];
+      const face = mood === 'done' ? 'check' : mood === 'waiting' ? 'wow' : mood === 'working' ? (t % 10 === 0 ? 'sleep' : 'eyes') : 'sleep';
+      return [robotRows(face, walking && t % 2), robotPal(mood === 'waiting' && t % 2 ? '#2a3140' : c, c)]; // 권한 요청 = 안테나 깜빡
+    },
+    motion: { working: 'bob', waiting: 'hop', done: ['bigjump', 'spin', 'clap'], idle: '' },
+    fx: { idle: (t) => t % 10 === 0 && ['zz', 'z', 56, 44] },
+  },
+  cactus: {
+    name: tr('ui.critter.cactus'),
+    land: 'ui.critter.land.cactus',
+    stay: true,
+    frame(mood, t) {
+      if (mood === 'idle' || mood === 'exited') return [cactusRows(CACTUS_TOP.grow[0], 'cCCc', true), CACTUS_DULL];
+      if (mood === 'done') return [cactusRows(CACTUS_TOP.bloom, 'eCCe'), CACTUS_PAL];
+      return [cactusRows(CACTUS_TOP.grow[mood === 'working' ? Math.floor(t / 6) % 3 : 0], 'eCCe'), CACTUS_PAL];
+    },
+    motion: { working: '', waiting: 'wobble', done: ['clap', 'bob'], idle: '' },
+    fx: {
+      done: (t) => t % 3 === 0 && ['spark', '✦', Math.random() * 50, 40 + Math.random() * 10],
+      idle: (t) => t % 10 === 0 && ['zz', 'z', 52, 40],
+    },
+    poke: { frame: () => [cactusRows(CACTUS_TOP.bloom, 'eCCe', false, 'bCCb'), CACTUS_PAL], anim: 'pk-shake', fx: ['petal', '✿', 3], say: 'ui.critter.poke.cactus' }, // 볼 빨개지며 꽃이 핀다
+  },
+  goldfish: {
+    name: tr('ui.critter.goldfish'),
+    land: 'ui.critter.land.goldfish',
+    stay: true,
+    frame(mood, t) {
+      if (mood === 'idle' || mood === 'exited') return [fishRows(4, 5, false, false, 'f'), FISH_PAL];
+      if (mood === 'waiting') return [fishRows(8, 4, false, t % 2, 'e', t % 4 === 1 ? [12, 3] : t % 4 === 2 ? [11, 2] : null), FISH_PAL]; // 유리에 붙어 뻐끔
+      if (mood === 'done') return [fishRows(5, FISH_JUMP[t % 6], false, t % 2), FISH_PAL];
+      const p = t % 14; // 1→8→2 왕복
+      return [fishRows(p <= 7 ? 1 + p : 15 - p, 3 + (Math.floor(t / 3) % 2), p >= 8, t % 2), FISH_PAL];
+    },
+    motion: { working: '', waiting: '', done: ['', 'clap'], idle: '' },
+    fx: {
+      waiting: (t) => t % 10 === 4 && ['bubble', '?', 60, 40],
+      done: (t) => t % 3 === 0 && ['blub', '○', 20 + Math.random() * 30, 42],
+      idle: (t) => t % 10 === 0 && ['zz', 'z', 58, 36],
+    },
+    poke: { frame: (t) => [fishRows(t % 2 ? 1 : 8, 4, t % 2 === 0, true), FISH_PAL], anim: 'pk-slosh', fx: ['blub', '○', 4], say: 'ui.critter.poke.goldfish' }, // 놀라 좌우로
+  },
 };
+const POKE_HAPPY = { frame: (t, k) => k.frame('done', t, false), anim: 'pk-hop', fx: ['heart', '♥', 2] };
 const CRITTER_KINDS = Object.keys(CRITTERS);
 let critterKind = pref.get('critterKind', 'random'); // random 이면 세션 창을 띄울 때마다(앱을 다시 켤 때도) 무작위
-const pickCritter = () => (CRITTERS[critterKind] ? critterKind : CRITTER_KINDS[Math.floor(Math.random() * CRITTER_KINDS.length)]);
+const pickCritter = () => (Object.hasOwn(CRITTERS, critterKind) ? critterKind : CRITTER_KINDS[Math.floor(Math.random() * CRITTER_KINDS.length)]);
 // 처음 서 있는 자리와 박자는 캐릭터마다 무작위로(여러 마리가 똑같이 움직이지 않게)
 const critterHtml = (kind) => `<div class="critter" aria-hidden="true" data-kind="${kind}" data-seed="${Math.floor(Math.random() * 40)}"><div class="cr-move" style="left: ${10 + Math.round(Math.random() * 50)}%"><div class="cr-body"></div></div></div>`;
 let crittersOn = pref.get('critters', '1') === '1';
 document.body.classList.toggle('no-critters', !crittersOn);
+const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+// 효과는 캐릭터 위치 요소(.cr-move) 안에 붙여 걷기·끌기 때 같이 움직인다. x·y 는 캐릭터 왼쪽 아래 기준.
 function critterFx(c, [cls, text, x, y]) {
+  if (cls === 'bubble') c.querySelector('.cr-fx.bubble')?.remove(); // 말풍선은 캐릭터마다 하나
   const e = el('div', `cr-fx ${cls}`, text);
-  e.style.left = `${c.querySelector('.cr-move').offsetLeft + x}px`;
+  e.style.left = `${x}px`;
   e.style.bottom = `${y}px`;
   e.style.setProperty('--dx', `${(Math.random() - 0.5) * 40}px`);
-  c.append(e);
+  c.firstChild.append(e);
   setTimeout(() => e.remove(), 3600);
 }
 let critterBeat = 0;
@@ -689,9 +836,16 @@ function paintCritter(n) {
   const k = CRITTERS[c.dataset.kind], mood = critterMood(n), t = critterBeat + Number(c.dataset.seed);
   const walking = c.classList.contains('walking');
   const body = c.firstChild.firstChild;
-  const html = crSvg(...k.frame(mood, t, walking));
+  const poke = c.pokeT && (k.poke ?? POKE_HAPPY); // 눌렀을 때 반응(1.4초)이 기분 그림·움직임보다 먼저
+  const html = crSvg(...(poke ? poke.frame(t, k) : k.frame(mood, t, walking)));
   if (body.dataset.html !== html) { body.innerHTML = html; body.dataset.html = html; }
-  const m = k.motion[mood];
+  if (poke) { if (body.className !== `cr-body ${poke.anim}`) body.className = `cr-body ${poke.anim}`; return; }
+  let m = k.motion[mood];
+  if (Array.isArray(m)) {
+    if (c.dataset.mood !== mood || !m.includes(c.dataset.pick)) c.dataset.pick = m[Math.floor(Math.random() * m.length)];
+    m = c.dataset.pick;
+  }
+  c.dataset.mood = mood;
   const cls = `cr-body ${mood === 'exited' ? '' : typeof m === 'function' ? m(t) : m ?? ''}`.trim();
   if (body.className !== cls) body.className = cls;
   c.classList.toggle('gone', mood === 'exited');
@@ -710,7 +864,7 @@ setInterval(() => {
 const WALK_SPEED = 22; // 화면 px/초
 function wander(n) {
   const c = n.el.querySelector('.critter');
-  if (!c || n.wanderT || effectiveState(n) !== 'working' || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (!c || n.wanderT || c.landT || c.held || CRITTERS[c.dataset.kind]?.stay || effectiveState(n) !== 'working' || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   const step = () => {
     const mv = c.querySelector('.cr-move');
     const max = Math.max(0, c.clientWidth - mv.offsetWidth);
@@ -743,13 +897,149 @@ function stopWander(n) {
   c.classList.remove('walking');
 }
 
+// 캐릭터 바꾸기(머리 버튼·설정 둘 다): 새 캐릭터가 위에서 떨어져 철푸덕 납작해졌다가 튕겨 돌아온다. 떨어지는 동안은 산책하지 않는다.
+function setCritter(n, kind) {
+  const c = n.el.querySelector('.critter');
+  if (!c) return;
+  stopWander(n);
+  c.dataset.kind = kind;
+  clearTimeout(c.pokeT);
+  c.pokeT = 0;
+  delete c.firstChild.firstChild.dataset.html;
+  paintCritter(n);
+  landCritter(n, 150, true); // 화면 위에서 투명하게 나타나며 떨어진다
+}
+// 착지(놓았을 때·종류 바꿀 때 같이 씀): h px 위에서 가속 낙하 → 발밑 기준 철푸덕 찌그러짐 → 원래대로, 전체 0.9초.
+// 닿는 순간 양옆 먼지 두 덩이 + 종류별 한마디. 떨어지는 동안은 산책하지 않고 끝나면 다시 걷는다(일하는 중·stay 아님일 때만, wander 가 판단).
+function landCritter(n, h, fade) {
+  const c = n.el.querySelector('.critter');
+  const after = () => { if (nodes.get(n.data.id) === n) wander(n); };
+  clearTimeout(c.landT);
+  clearTimeout(c.dustT);
+  c.landT = 0;
+  c.classList.remove('landing');
+  if (!crittersOn || document.hidden || reducedMotion()) return after();
+  c.style.setProperty('--drop', `${-h}px`);
+  c.style.setProperty('--fade', fade ? 0 : 1);
+  void c.offsetWidth; // 연달아 떨어져도 처음부터 다시
+  c.classList.add('landing');
+  c.dustT = setTimeout(() => {
+    const w = c.firstChild.offsetWidth;
+    critterFx(c, ['dust', '', -16, 0]);
+    critterFx(c, ['dust', '', w - 20, 0]);
+    critterFx(c, ['bubble', tr(CRITTERS[c.dataset.kind].land), w - 10, 46]);
+  }, 315); // cr-land 35% = 바닥에 닿는 순간
+  c.landT = setTimeout(() => { c.landT = 0; c.classList.remove('landing'); after(); }, 900);
+}
+function openCritterMenu(n, anchor) {
+  const cur = n.el.querySelector('.critter')?.dataset.kind;
+  showMenu(`critter:${n.data.id}`, [el('div', 'gm-label', tr('ui.critter.pick')), ...CRITTER_KINDS.map((k) => {
+    const b = el('button', 'gm-item gm-critter');
+    b.innerHTML = crSvg(...CRITTERS[k].frame('working', 0, false)); // 고정 그림만
+    b.append(el('span', null, CRITTERS[k].name));
+    if (k === cur) b.setAttribute('aria-current', 'true');
+    b.addEventListener('click', () => {
+      closeGroupMenu();
+      // 무작위로 이미 떠 있는 것과 같아도 고정은 저장한다. 그림이 같으면 떨어지는 애니메이션만 건너뛴다.
+      if (n.data.critter === k) return;
+      n.data.critter = k;
+      if (k !== n.el.querySelector('.critter')?.dataset.kind) setCritter(n, k);
+      save();
+    });
+    return b;
+  })], anchor);
+}
+
+// 캐릭터 잡아 끌기: 누른 채 4px 넘게 움직이면 잡혀 대롱대롱(위쪽 가운데 축). 가로는 세션 창 폭 안, 위로는 90px 까지(보드 배율로 나눔).
+// 놓으면 그 높이에서 떨어진다. 덜 움직이고 놓으면 클릭 반응. 노드 포커스·끌기·보드 이동·선택으로 가지 않게 여기서 멈춘다(Ctrl+클릭 고르기는 그대로 둔다).
+// H·Space·가운데 버튼 이동과 연결 모드는 viewport·board 캡처 리스너가 먼저 가져가서 여기까지 오지 않는다.
+const CR_LIFT = 90;
+function grabCritter(e, n) {
+  if (e.button !== 0 || mod(e)) return;
+  e.stopPropagation();
+  const c = n.el.querySelector('.critter'), mv = c.firstChild;
+  const x0 = e.clientX, y0 = e.clientY;
+  let left0 = 0;
+  drag(e, (dx, dy, ev) => {
+    const mx = ev.clientX - x0, my = ev.clientY - y0;
+    if (!c.held) {
+      if (Math.hypot(mx, my) < 4) return;
+      c.held = true;
+      stopWander(n);
+      clearTimeout(c.landT);
+      clearTimeout(c.dustT);
+      c.landT = 0;
+      c.classList.remove('landing');
+      c.querySelector('.cr-fx.bubble')?.remove(); // 옮긴 뒤 예전 자리에 말풍선이 남지 않게
+      mv.style.transition = '';
+      left0 = mv.offsetLeft;
+      document.body.classList.add('cr-grabbing');
+      if (!reducedMotion()) c.classList.add('grabbed');
+    }
+    mv.style.left = `${Math.max(0, Math.min(c.clientWidth - mv.offsetWidth, left0 + mx / view.scale))}px`;
+    mv.style.bottom = `${Math.max(0, Math.min(CR_LIFT, -my / view.scale))}px`;
+  }, (done) => {
+    if (!c.held) return done && pokeCritter(n); // 취소로 끝난 누르기는 클릭이 아니다
+    c.held = false;
+    document.body.classList.remove('cr-grabbing');
+    c.classList.remove('grabbed');
+    const h = parseFloat(mv.style.bottom) || 0;
+    mv.style.bottom = '';
+    landCritter(n, h);
+  }, true); // 캐릭터 자리는 저장하지 않는다
+}
+// 클릭 반응(1.4초): 종류별 그림·몸짓·효과·한마디(CRITTERS.poke), 따로 없으면 기쁜 얼굴로 폴짝 + 하트 둘
+function pokeCritter(n) {
+  if (reducedMotion()) return;
+  const c = n.el.querySelector('.critter');
+  const p = CRITTERS[c.dataset.kind].poke ?? POKE_HAPPY;
+  clearTimeout(c.pokeT);
+  c.pokeT = setTimeout(() => { c.pokeT = 0; paintCritter(n); }, 1400);
+  c.firstChild.firstChild.className = 'cr-body';
+  void c.offsetWidth; // 연달아 눌러도 처음부터 다시
+  paintCritter(n);
+  const w = c.firstChild.offsetWidth, [cls, text, count] = p.fx;
+  for (let i = 0; i < count; i++) critterFx(c, [cls, text, (w * (i + 0.5)) / count - 5, 34 + (i % 2) * 6]);
+  if (p.say) critterFx(c, ['bubble', tr(p.say), w - 10, 46]);
+}
+
+// 케이블 호출: 두 캐릭터가 서로 쪽을 보고 보낸 쪽 '…', 받은 쪽 '!'. 끝나면 받은 쪽이 '✓'·하트.
+// 방향은 효과가 끝날 때(3.6초)까지만 바꾼다. 그사이 산책·두리번이 방향을 바꿨으면 그쪽을 따른다.
+function critterMeet({ from, to }, end) {
+  const a = nodes.get(from), b = nodes.get(to);
+  const ca = a?.el.querySelector('.critter'), cb = b?.el.querySelector('.critter');
+  if (!crittersOn || !ca || !cb || a === b) return;
+  const mid = (n) => n.data.x + n.data.w / 2;
+  const face = (c, l) => {
+    if (!c.faceT) c.faceWas = c.classList.contains('left'); // 연달아 만나도 처음 방향으로 돌아간다
+    clearTimeout(c.faceT);
+    c.classList.toggle('left', l);
+    c.faceT = setTimeout(() => {
+      c.faceT = 0;
+      if (!c.classList.contains('walking') && c.classList.contains('left') === l) c.classList.toggle('left', c.faceWas);
+    }, 3600);
+  };
+  face(ca, mid(b) < mid(a));
+  face(cb, mid(a) < mid(b));
+  if (document.hidden || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const at = (c) => c.firstChild.offsetWidth - 10;
+  if (end) {
+    if (critterMood(b) === 'exited') return; // 받은 세션이 끝났으면 대답(✓·하트)이 없다
+    critterFx(cb, ['bubble', '✓', at(cb), 46]);
+    critterFx(cb, ['heart', '♥', at(cb) - 14, 40]);
+  } else {
+    critterFx(ca, ['bubble', '…', at(ca), 46]);
+    critterFx(cb, ['bubble', '!', at(cb), 46]);
+  }
+}
+
 async function addNode(data) {
   if (nodes.has(data.id)) return; // 같은 id 로 두 번 만들면 pty 가 덮어써져 종료 때 정리되지 않는다
   // claude 는 앱이 세션 id 를 정해 두고 다음 실행 때 그 id 로 이어한다
   if (data.command === 'claude') data.sessionId ??= crypto.randomUUID();
   data.name ??= uniqueName(basename(data.cwd));
   const node = el('div', 'node');
-  node.innerHTML = `<div class="head"><span class="agent"></span><span class="where"></span><span class="tokens"></span><span class="ended">${tr('ui.node.ended')}</span><button class="restart">${tr('ui.node.restart')}</button><button class="files-btn icon-btn" title="${tr('ui.node.filesTitle')}" aria-label="${tr('ui.node.files')}"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="close" aria-label="${tr('ui.node.close')}">×</button><button class="link-state"><span class="link-label"></span><span class="link-list"></span></button></div><div class="body"></div>${['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].map((d) => `<div class="rz rz-${d}" data-dir="${d}"></div>`).join('')}<div class="port" title="${tr('ui.node.port')}"></div>${critterHtml(pickCritter())}`;
+  node.innerHTML = `<div class="head"><span class="agent"></span><span class="where"></span><span class="tokens"></span><span class="ended">${tr('ui.node.ended')}</span><button class="restart">${tr('ui.node.restart')}</button><button class="files-btn icon-btn" title="${tr('ui.node.filesTitle')}" aria-label="${tr('ui.node.files')}"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="critter-btn icon-btn" title="${tr('ui.critter.pickTitle')}" aria-label="${tr('ui.critter.pick')}"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6V3.5L6 5h4l2-1.5V6a5 5 0 0 1 1 3c0 2.5-2.2 4-5 4s-5-1.5-5-4a5 5 0 0 1 1-3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="6.3" cy="8.6" r=".9" fill="currentColor"/><circle cx="9.7" cy="8.6" r=".9" fill="currentColor"/></svg></button><button class="close" aria-label="${tr('ui.node.close')}">×</button><button class="link-state"><span class="link-label"></span><span class="link-list"></span></button></div><div class="body"></div>${['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].map((d) => `<div class="rz rz-${d}" data-dir="${d}"></div>`).join('')}<div class="port" title="${tr('ui.node.port')}"></div>${critterHtml(Object.hasOwn(CRITTERS, data.critter) ? data.critter : pickCritter())}`;
   node.querySelector('.agent').textContent = LABELS[data.command] ?? data.command;
   node.querySelector('.agent').title = tr('ui.node.switchAgent');
   // 카드 안에서 다른 CLI 를 직접 치면 Bimo 가 모른다(훅·세션 id 없음) → 이름을 눌러 그 AI 로 다시 실행 (2026-10-31 사용자 버그)
@@ -799,6 +1089,7 @@ async function addNode(data) {
 
   // 직접 누르면 이미 고른 세션이어도 트리를 이 세션 폴더로 되돌린다 (2026-10-31 사용자 요청, 10-28 "B" 보완)
   node.addEventListener('pointerdown', () => { syncFilesTo(n); setFocused(n); });
+  node.querySelector('.cr-move').addEventListener('pointerdown', (e) => grabCritter(e, n));
   setFocused(n);
   paintLinkStates();
   node.querySelector('.head').addEventListener('pointerdown', (e) => {
@@ -822,6 +1113,7 @@ async function addNode(data) {
     collabFor === n ? closeCollab() : openCollab(n);
   });
   node.querySelector('.files-btn').addEventListener('click', () => openFiles(data.cwd));
+  node.querySelector('.critter-btn').addEventListener('click', (e) => (groupMenuFor === `critter:${data.id}` ? closeGroupMenu() : openCritterMenu(n, e.currentTarget)));
   // 테두리·모서리 어디서든 크기 조절
   const MIN_W = 320, MIN_H = 200;
   for (const h of node.querySelectorAll('.rz')) h.addEventListener('pointerdown', (e) => {
@@ -1309,13 +1601,12 @@ $('opt-critter-kind').value = critterKind;
 $('opt-critter-kind').addEventListener('change', (e) => {
   critterKind = e.target.value;
   pref.set('critterKind', critterKind);
+  // 전역 선택이 세션별 선택(data.critter)을 이긴다
   for (const n of nodes.values()) {
-    const c = n.el.querySelector('.critter');
-    if (!c) continue;
-    c.dataset.kind = pickCritter();
-    delete c.firstChild.firstChild.dataset.html;
-    paintCritter(n);
+    delete n.data.critter;
+    setCritter(n, pickCritter());
   }
+  save();
 });
 if (isMac) {
   for (const k of document.querySelectorAll('#keys kbd')) if (k.textContent === 'Ctrl' || k.textContent === 'Alt') k.textContent = '⌘';
@@ -2023,6 +2314,13 @@ api.appVersion().then((v) => {
 // 업데이트 뒤 처음 켜면 바뀐 점 목록. "닫기" 는 다음에 켤 때 또 뜨고, "다시 보지 않기" 는 이 버전에서 다시 안 뜬다.
 // 버전을 올릴 때 맨 위에 한 덩어리 추가한다.
 const CHANGES = [
+  { v: '1.2.5', items: [
+    { ko: '새 캐릭터 넷이 생겼습니다: 고양이, 꼬마 로봇, 선인장 화분, 금붕어.', en: 'Four new characters: a cat, a little robot, a potted cactus, and a goldfish.' },
+    { ko: '세션 머리의 캐릭터 버튼으로 세션마다 캐릭터를 바꿉니다. 새 캐릭터는 위에서 철푸덕 떨어집니다.', en: 'Use the character button on a session header to pick a character per session. New characters drop in from above with a plop.' },
+    { ko: '캐릭터를 잡아 끌어 옮길 수 있습니다. 놓으면 떨어지며 한마디 하고, 누르면 캐릭터마다 다른 반응을 합니다.', en: 'Drag characters to move them. Let go and they fall with a remark; click them and each one reacts in its own way.' },
+    { ko: '케이블로 말을 주고받으면 두 캐릭터가 서로를 보며 말풍선을 띄웁니다. 일이 끝날 때 축하 동작도 매번 달라집니다.', en: 'When sessions talk over a cable, their characters face each other with speech bubbles. The celebration when work finishes changes every time.' },
+    { ko: '오른쪽 아래 미니맵에 프로젝트 이름이 보입니다.', en: 'The minimap (bottom right) now shows project names.' },
+  ] },
   { v: '1.2.3', items: [
     { ko: '한글을 빠르게 치고 Space 를 누르면 띄어쓰기가 씹히던 문제를 고쳤습니다.', en: 'Fixed spaces being dropped when pressing Space right after fast Korean typing.' },
     { ko: 'Space 를 꾹 눌러 보드를 옮긴 뒤에도 터미널에서 바로 이어 칠 수 있습니다.', en: 'After holding Space to pan the board, you can keep typing in the terminal right away.' },
@@ -2311,7 +2609,7 @@ function closeGroupMenu() {
   groupMenuFor = null;
   $('group-menu').hidden = true;
 }
-addEventListener('pointerdown', (e) => { if (groupMenuFor != null && !e.target.closest('#group-menu, .group-add, .wt-new, .wt-sessions, .node .agent')) closeGroupMenu(); }, true);
+addEventListener('pointerdown', (e) => { if (groupMenuFor != null && !e.target.closest('#group-menu, .group-add, .wt-new, .wt-sessions, .node .agent, .critter-btn')) closeGroupMenu(); }, true);
 addEventListener('keydown', (e) => { if (e.key === 'Escape' && groupMenuFor != null) closeGroupMenu(); });
 
 // --- 세션 가져오기: 다른 터미널에서 했던 Claude·Codex·Cursor 대화를 보드에서 이어 열기 ---
@@ -3587,7 +3885,12 @@ let miniMap = null; // 미니맵 좌표 -> 보드 좌표 변환값
 function drawMinimap() {
   const c = $('minimap');
   const ctx = c.getContext('2d');
-  const W = c.width, H = c.height;
+  // 그리는 좌표는 CSS 크기. 숨겨져 0 이면 index.html 원래 속성 크기(dpr 로 키우기 전에 기억). 실제 캔버스는 dpr 배라 글자가 흐리지 않다.
+  c.dataset.w ??= c.width; c.dataset.h ??= c.height;
+  const W = c.clientWidth || +c.dataset.w, H = c.clientHeight || +c.dataset.h;
+  const dpr = devicePixelRatio || 1;
+  if (c.width !== Math.round(W * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
   const bb = bounds();
   $('corner').classList.toggle('no-map', !bb);
@@ -3614,6 +3917,49 @@ function drawMinimap() {
   ctx.strokeStyle = '#f0c94a99';
   ctx.lineWidth = 1;
   ctx.strokeRect(x + 0.5, y + 0.5, vw * s, vh * s);
+  drawMiniNames(ctx, m, s, W);
+}
+
+// 프로젝트 이름을 묶음 영역 가운데에. 글자 크기는 영역에 맞춰(폭에 들어가게, 높이의 40% 이하, 7~16px).
+// 큰 묶음부터 놓고, 먼저 놓인 이름과 겹치는 작은 묶음 이름은 건너뛴다.
+function drawMiniNames(ctx, m, s, W) {
+  const groups = new Map();
+  for (const n of nodes.values()) {
+    const { key, name } = projectOf(n);
+    const g = groups.get(key) ?? { key, name, x: Infinity, y: Infinity, r: -Infinity, b: -Infinity };
+    g.x = Math.min(g.x, n.data.x); g.y = Math.min(g.y, n.data.y);
+    g.r = Math.max(g.r, rightEdge(n)); g.b = Math.max(g.b, n.data.y + n.data.h);
+    groups.set(key, g);
+  }
+  const fam = getComputedStyle(document.body).fontFamily;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  const placed = [];
+  const hit = (a) => placed.some((b) => a.x < b.r && b.x < a.r && a.y < b.b && b.y < a.b);
+  for (const g of [...groups.values()].sort((a, b) => (b.r - b.x) * (b.b - b.y) - (a.r - a.x) * (a.b - a.y))) {
+    const [gx, gy] = m(g.x, g.y);
+    const gw = (g.r - g.x) * s, gh = (g.b - g.y) * s;
+    ctx.font = `600 10px ${fam}`;
+    const size = Math.max(7, Math.min(16, gh * 0.4, (10 * (gw - 4)) / ctx.measureText(g.name).width));
+    ctx.font = `600 ${size}px ${fam}`;
+    const maxW = Math.max(24, gw - 4);
+    let text = g.name;
+    if (ctx.measureText(text).width > maxW) {
+      while (text.length > 1 && ctx.measureText(`${text}…`).width > maxW) text = text.slice(0, -1);
+      text += '…';
+    }
+    const w = ctx.measureText(text).width;
+    const cx = Math.min(W - 2 - w / 2, Math.max(2 + w / 2, gx + gw / 2)), cy = gy + gh / 2;
+    const box = { x: cx - w / 2 - 1, r: cx + w / 2 + 1, y: cy - size / 2 - 1, b: cy + size / 2 + 1 };
+    if (hit(box)) continue;
+    placed.push(box);
+    ctx.strokeStyle = '#000000cc'; ctx.lineWidth = Math.max(2.5, size / 4);
+    ctx.strokeText(text, cx, cy);
+    ctx.fillStyle = `hsl(${groupHue(g.key, g.name)} 80% 85%)`;
+    ctx.fillText(text, cx, cy);
+  }
+  ctx.textAlign = 'start';
 }
 
 $('minimap').addEventListener('pointerdown', (e) => {
