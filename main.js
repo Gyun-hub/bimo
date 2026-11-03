@@ -8,6 +8,7 @@ const pty = require('@lydell/node-pty');
 const board = require('./lib/board');
 const codex = require('./lib/codex');
 const doc = require('./lib/doc');
+const transcript = require('./lib/transcript');
 const { t } = require('./locales');
 
 // --smoke: 기본 보드로 띄워 스크린샷(%TEMP%\bimo-smoke.png)만 찍고 종료. 저장된 보드는 건드리지 않는다.
@@ -18,6 +19,8 @@ if (process.env.BIMO_USER_DATA) app.setPath('userData', process.env.BIMO_USER_DA
 // 개발 실행(패키징 안 됨)은 설치본과 board.json 을 서로 덮어쓰지 않게 Bimo-dev 폴더를 쓴다.
 else if (!app.isPackaged) app.setPath('userData', path.join(app.getPath('appData'), 'Bimo-dev'));
 const keepBoard = !smoke || !!process.env.SMOKE_SAVE;
+// Windows "입력하는 동안 포인터 숨기기" 를 Chromium 이 따라 해 Space 꾹(손바닥 이동) 중 커서가 사라진다 — 실제 마우스 이동 전엔 안 돌아와 끈다.
+app.commandLine.appendSwitch('disable-features', 'HideCursorWhileTyping');
 
 const boardFile = path.join(app.getPath('userData'), 'board.json');
 const hookDir = path.join(app.getPath('userData'), 'hooks');
@@ -99,8 +102,8 @@ function mcpRoute(caller, route, body) {
 function resolveWait(id, event) {
   const w = waits.get(id);
   if (!w) return;
-  setTimeout(() => {
-    const text = event.last_assistant_message || lastReply(event.transcript_path) || '(빈 응답)';
+  setTimeout(async () => {
+    const text = event.last_assistant_message || await lastReply(event.transcript_path) || '(빈 응답)';
     w.done({ reply: `"${w.name}" 세션의 답:\n${text}` });
   }, event.last_assistant_message ? 0 : 1000);
 }
@@ -117,7 +120,7 @@ const hookServer = http.createServer((req, res) => {
     body += chunk;
     if (body.length > HOOK_MAX_BODY) req.destroy();
   });
-  req.on('end', () => {
+  req.on('end', async () => {
     const id = decodeURIComponent(rawId || '');
     if (kind === 'mcp') {
       let parsed = {};
@@ -136,7 +139,7 @@ const hookServer = http.createServer((req, res) => {
         return res.writeHead(200, { 'Content-Type': 'application/json' }).end(reply);
       }
       if (event.hook_event_name === 'Stop' && !event.agent_id) resolveWait(id, event);
-      if (event.hook_event_name === 'SubagentStop' && !event.last_assistant_message) event.last_assistant_message = lastReply(event.agent_transcript_path);
+      if (event.hook_event_name === 'SubagentStop' && !event.last_assistant_message) event.last_assistant_message = await lastReply(event.agent_transcript_path);
       // 최종 보고(SubagentHandback)는 막지 않는다 — 막으면 끝내지도 못한다.
       if (event.hook_event_name === 'PreToolUse' && event.agent_id && stopped.has(agentKey(event.agent_id)) && event.tool_name !== 'SubagentHandback') reply = STOP_REPLY;
       // Stop 이 transcript 기록보다 먼저 올 수 있어 잠시 뒤에 토큰을 센다. 이어한 세션은 시작할 때도 센다.
@@ -188,56 +191,32 @@ function notifyWaiting(id, event) {
 
 // 서브 에이전트 transcript(JSONL)를 대화 목록으로 줄인다. Claude 프로젝트 폴더 밖 파일은 읽지 않는다.
 const claudeProjects = path.join(os.homedir(), '.claude', 'projects');
-const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
-ipcMain.handle('agent:transcript', (e, file) => {
+const inClaudeProjects = (file) => {
   const full = path.resolve(String(file));
-  if (!full.toLowerCase().startsWith(claudeProjects.toLowerCase() + path.sep) || !fs.existsSync(full)) return null;
-  const out = [];
-  const handbacks = new Set(); // 최종 보고 도구의 결과({"success":true…})는 대화에서 뺀다
-  for (const line of fs.readFileSync(full, 'utf8').split('\n')) {
-    let entry;
-    try { entry = JSON.parse(line); } catch { continue; }
-    const content = entry.message?.content;
-    if (entry.type === 'user' && !entry.isMeta) {
-      if (typeof content === 'string') out.push({ role: 'user', text: content });
-      else for (const c of content || []) {
-        if (c.type === 'text' && !c.text.startsWith('<system-reminder>')) out.push({ role: 'user', text: c.text });
-        if (c.type === 'tool_result' && !handbacks.has(c.tool_use_id)) {
-          const text = typeof c.content === 'string' ? c.content : (c.content || []).map((x) => x.text || '').join('\n');
-          out.push({ role: 'result', text: clip(text, 6000), error: !!c.is_error });
-        }
-      }
-    } else if (entry.type === 'assistant') {
-      for (const c of content || []) {
-        if (c.type === 'text' && c.text.trim()) out.push({ role: 'assistant', text: c.text });
-        if (c.type === 'tool_use' && c.name === 'SubagentHandback') {
-          handbacks.add(c.id);
-          out.push({ role: 'assistant', text: c.input?.message || '' });
-        }
-        else if (c.type === 'tool_use') out.push({ role: 'tool', name: c.name, text: clip(JSON.stringify(c.input), 3000) });
-      }
-    }
+  return full.toLowerCase().startsWith(claudeProjects.toLowerCase() + path.sep) && fs.existsSync(full) ? full : null;
+};
+// 수 MB 까지 커져 동기로 읽으면 모든 터미널 출력이 멈춘다 → 비동기
+ipcMain.handle('agent:transcript', async (e, file) => {
+  const full = inClaudeProjects(file);
+  if (!full) return null;
+  return transcript.transcriptMessages(await fs.promises.readFile(full, 'utf8')).slice(-300);
+});
+// 중단 판정만: 파일 끝 64KB 만 읽는다(간략히 보기에서 2초마다 불린다). 실패·경로 밖은 false
+const TAIL = 64 * 1024;
+ipcMain.handle('agent:interrupted', async (e, file) => {
+  const full = inClaudeProjects(file);
+  if (!full) return false;
+  try {
+    const { text, partial } = await transcript.readTail(full, TAIL);
+    return transcript.interrupted(text, partial);
+  } catch {
+    return false;
   }
-  return out.slice(-300);
 });
 
 // SubagentStop 에 last_assistant_message 가 안 오는 버전이 있어 서브 에이전트 transcript(JSONL)의 마지막 답변을 읽는다.
-// 최종 보고는 텍스트 블록이거나 SubagentHandback 도구의 message 로 온다.
-function lastReply(file) {
-  if (!file || !fs.existsSync(file)) return undefined;
-  const lines = fs.readFileSync(file, 'utf8').trim().split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const { type, message } = JSON.parse(lines[i]);
-      const text = type === 'assistant' && (message?.content || [])
-        .map((c) => (c.type === 'text' ? c.text : c.type === 'tool_use' && c.name === 'SubagentHandback' ? c.input?.message : ''))
-        .filter(Boolean)
-        .join('\n');
-      if (text) return text;
-    } catch {}
-  }
-  return undefined;
-}
+// 끝부터 비동기로 조금씩 읽는다(lib/transcript.js lastReply).
+const lastReply = (file) => transcript.lastReply(file, TAIL);
 
 // 세션 호출 MCP 서버 설정. 스크립트는 asar 밖(userData)에 복사해 두고, 앱 실행 파일을 node 로 띄운다(별도 node 설치 불필요).
 function mcpScript() {

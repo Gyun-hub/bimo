@@ -915,18 +915,21 @@ async function addNode(data) {
     if (!IMPORT_AGENTS.includes(data.command)) return api.write(data.id, isMac ? '\x15' : '\x1b');
     api.writeKeys(data.id, [...'\x05\x15\x7f'.repeat(20)], 6);
   };
+  // 한글 IME 는 Space 를 누르면 compositionend 뒤에 Space keydown 이 온다. xterm 은 조합 글자를 setTimeout(0) 으로 늦게 보내므로
+  // 그 사이 공백은 같은 큐 뒤로 미뤄야 "안녕 " 순서가 된다. 그 밖에는 즉시 보내 다른 키와 순서가 섞이지 않게 한다.
+  let imeEnd = false;
+  term.textarea?.addEventListener('compositionend', () => { imeEnd = true; setTimeout(() => { imeEnd = false; }, 0); });
   term.attachCustomKeyEventHandler((e) => {
-    // Space: 톡 누르면 공백, 꾹 누르면(반복 keydown) 이동 모드. 공백은 keyup·다음 키 직전에 보내 순서를 지킨다. 한글 조합 중(229)은 건드리지 않는다.
+    // Space: 공백은 누르는 즉시 보내고, 꾹 누르면(반복 keydown) 이동 모드. 실제로 끌기 시작하면 그 공백을 지운다(viewport pointerdown). 한글 조합 중(229)은 건드리지 않는다.
     if (e.code === 'Space' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
-      if (e.type === 'keydown') {
-        if (!e.repeat) { flushSpace(); spacePend = () => term.input(' '); }
-        else if (spacePend) { spacePend = null; if (tool !== 'hand') { spaceHand = true; setTool('hand', true); } }
-        else if (!spaceHand) return true; // 이미 공백을 보낸 뒤의 반복(다른 키가 끼었을 때)은 예전처럼 공백
-        e.preventDefault(); // keypress·input 으로 공백이 새지 않게
-      } else if (e.type === 'keyup') flushSpace();
+      if (e.type !== 'keydown') return false;
+      if (!e.repeat) { spaceClean = true; if (imeEnd) setTimeout(() => term.input(' '), 0); else term.input(' '); }
+      else if (spaceClean) { spaceClean = false; if (tool !== 'hand') { spaceHand = true; spaceFrom = data.id; setTool('hand', true); } }
+      else if (!spaceHand) return true; // 이미 공백을 보낸 뒤의 반복(다른 키가 끼었을 때)은 예전처럼 공백
+      e.preventDefault(); // keypress·input 으로 공백이 새지 않게
       return false;
     }
-    if (e.type === 'keydown') flushSpace();
+    if (e.type === 'keydown') spaceClean = false;
     if (e.key === 'Backspace' && (isMac ? e.metaKey && !e.ctrlKey : e.altKey && !e.ctrlKey && !e.metaKey)) {
       if (e.type === 'keydown') {
         e.preventDefault();
@@ -1248,7 +1251,9 @@ viewport.addEventListener('pointerdown', (e) => {
   if (boardEl.classList.contains('far') && e.target.closest('.group-cover')) return; // 멀리 보기 덮개 끌기는 V 와 같이 dragGroup 이 맡는다
   e.stopImmediatePropagation(); // 같은 viewport 의 선택(사각형) 리스너까지 막는다
   document.activeElement?.blur();
-  drag(e, pan); // pointerdown 기본 동작을 막아 xterm 의 mousedown(텍스트 선택)도 생기지 않는다
+  // pointerdown 기본 동작을 막아 xterm 의 mousedown(텍스트 선택)도 생기지 않는다.
+  // 터미널 Space 꾹으로 들어온 이동이면 실제로 움직이는 첫 순간에 미리 보낸 공백을 한 번 지운다.
+  drag(e, (dx, dy) => { if (spaceFrom) { api.write(spaceFrom, '\x7f'); spaceFrom = null; } pan(dx, dy); });
 }, true);
 addEventListener('keydown', (e) => {
   if (e.ctrlKey || e.altKey || e.metaKey || e.target.closest?.('input, textarea, select, .xterm')) return;
@@ -1258,10 +1263,8 @@ addEventListener('keydown', (e) => {
 });
 // Space 를 누르고 있는 동안만 이동 모드 (피그마처럼). 입력칸에선 그대로 공백, 터미널은 꾹 누를 때만 이동(attachCustomKeyEventHandler).
 let spaceHand = false;
-// 터미널에서 눌렀지만 아직 안 보낸 공백. 포커스가 빠져도 버리지 않고 보낸다(짧게 누른 공백 유실 방지).
-let spacePend = null;
-const flushSpace = () => { const f = spacePend; spacePend = null; f?.(); };
-addEventListener('focusout', flushSpace, true);
+// spaceClean = 터미널 Space 를 눌렀고 아직 다른 키가 안 끼었음. spaceFrom = 이동 모드를 켠 터미널(끌기 시작하면 공백 하나 지울 곳).
+let spaceClean = false, spaceFrom = null;
 addEventListener('keydown', (e) => {
   if (e.code !== 'Space' || e.ctrlKey || e.altKey || e.metaKey || e.target.closest?.('input, textarea, select, .xterm')) return;
   e.preventDefault(); // 포커스 남은 버튼이 눌리지 않게
@@ -1269,7 +1272,7 @@ addEventListener('keydown', (e) => {
   spaceHand = true;
   setTool('hand', true);
 });
-const endSpaceHand = () => { if (spaceHand) { spaceHand = false; setTool('select', true); } };
+const endSpaceHand = () => { spaceClean = false; spaceFrom = null; if (spaceHand) { spaceHand = false; setTool('select', true); } };
 addEventListener('keyup', (e) => { if (e.code === 'Space') endSpaceHand(); });
 addEventListener('blur', endSpaceHand);
 $('tool-select').addEventListener('click', () => setTool('select'));
@@ -1450,7 +1453,7 @@ function agentCard(n, a) {
   const box = el('section', 'agent-card');
   Object.assign(box.style, { width: `${cardSize.w}px`, height: `${cardSize.h}px` });
   box.innerHTML = '<div class="ac-head"><i class="led"></i><div class="ac-titles"><span class="ac-title"></span><span class="ac-meta"></span></div><span class="sub-time"></span><button class="sub-x">×</button></div><div class="ac-list"></div>';
-  const c = { el: box, list: box.querySelector('.ac-list'), a, open: new Set() };
+  const c = { el: box, list: box.querySelector('.ac-list'), a, n, open: new Set() };
   a.timeEl = box.querySelector('.sub-time');
   // 본문에서 끌어 고른 글자는 터미널처럼 바로 클립보드로
   c.list.addEventListener('mouseup', () => setTimeout(() => {
@@ -1481,20 +1484,46 @@ function renderCardHead(c) {
   x.disabled = a.status === 'running' && (!a.agentId || a.stopRequested);
 }
 
+// 사용자가 중단(Esc·도구 권한 거부)하면 SubagentStop·PostToolUse 가 안 온다 → 기록 마지막 줄로 끝을 판정한다
+// 판정은 await 뒤에 하므로 그 사이 카드가 지워졌거나 이미 끝났으면 건너뛴다
+const lastIsInterrupt = (msgs) => { const m = msgs?.at(-1); return m?.role === 'user' && !!m.text?.startsWith('[Request interrupted by user'); };
+function stopIfInterrupted(c, hit) {
+  if (!hit || nodes.get(c.n.data.id) !== c.n || c.a.card !== c || c.a.status !== 'running') return;
+  finish(c.a, 'stopped');
+  renderRack(c.n);
+}
+
+// 2초 주기와 보기 전환이 겹쳐도 카드마다 한 번에 하나만 읽는다(큰 기록을 겹쳐 받지 않게)
 async function loadCard(c) {
+  if (c.busy) return;
+  c.busy = true;
+  try { await drawCard(c); } finally { c.busy = false; }
+}
+
+async function drawCard(c) {
   const { a, list } = c;
-  if (!list.clientHeight) return; // 간략히 보기(기록 숨김)에선 읽지 않는다. 자세히로 돌아오면 다시 읽는다
+  if (!list.clientHeight) { // 간략히 보기(기록 숨김)에선 그리지 않고 파일 끝만 읽어 중단만 판정한다. 자세히로 돌아오면 다시 읽는다
+    if (a.status === 'running' && a.transcript) stopIfInterrupted(c, await api.agentInterrupted(a.transcript).catch(() => false));
+    return;
+  }
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
   const src = a.transcript;
-  // 기록 파일 위치를 알기 전에는 프롬프트(와 결과)만
-  const msgs = (src && await api.readTranscript(src))
-    || [{ role: 'user', text: a.prompt }, ...(a.result ? [{ role: 'assistant', text: a.result }] : [])];
+  // 기록 파일 위치를 모르거나 못 읽으면(~/.claude/projects 밖 등) 프롬프트(와 결과)만.
+  // 이미 기록을 그렸으면 그대로 두고 다음 주기에 다시 읽는다
+  let msgs = src ? await api.readTranscript(src).catch(() => null) : null;
   if (a.card !== c) return;
-  if (a.status !== 'running') c.final = true; // 끝난 뒤 한 번 더 읽고 멈춘다(기록 위치가 바뀌면 다시 읽는다)
+  const real = !!msgs;
+  if (!real && src && c.shownSrc) return;
+  if (!real) msgs = [{ role: 'user', text: a.prompt }, ...(a.result ? [{ role: 'assistant', text: a.result }] : [])];
+  if (real) stopIfInterrupted(c, lastIsInterrupt(msgs));
+  if (a.status !== 'running') c.final = true; // 끝난 뒤 한 번 더 읽고 멈춘다(기록 위치가 바뀌면 다시 읽는다). 대체 표시도 멈춘다 — 못 읽는 경로를 2초마다 부르지 않게
   c.src = src;
+  const key = real ? src : null; // 대체 표시는 null → 나중에 기록이 읽히면 덧붙이지 않고 새로 그린다
   // 기록은 뒤에만 붙는다 → 늘어난 항목만 덧붙여 읽던 자리·선택을 지킨다. 줄었거나(앞이 잘림) 출처가 바뀌면 새로 그린다.
-  const same = c.shown && c.shownSrc === src && msgs.length >= c.shown && msgs.length < 300;
-  if (same && msgs.length === c.shown) return;
+  // 300개 상한(main slice(-300))에 닿으면 길이가 같아도 앞이 밀린다 → 마지막 항목까지 같아야 그대로 둔다
+  const last = JSON.stringify(msgs.at(-1));
+  if (c.shownSrc === key && c.shown === msgs.length && c.last === last) return;
+  const same = c.shown && c.shownSrc === key && msgs.length > c.shown && msgs.length < 300;
   const from = same ? c.shown : 0;
   const items = msgs.slice(from).map((m, k) => {
     const i = from + k;
@@ -1510,13 +1539,16 @@ async function loadCard(c) {
   if (same) list.append(...items);
   else list.replaceChildren(...items);
   c.shown = msgs.length;
-  c.shownSrc = src;
+  c.shownSrc = key;
+  c.last = last;
   if (atBottom || !c.loaded) list.scrollTop = list.scrollHeight;
   c.loaded = true;
 }
 const dropCard = (card) => { cardResize.unobserve(card); card.remove(); };
+const KEEP_DONE = 10; // 세션마다 남길 끝난 카드 수. 기록 DOM 이 끝없이 쌓이지 않게 오래된(end 기준) 것부터 지운다
 
 function renderRack(n) {
+  [...n.agents.values()].filter((a) => a.status !== 'running').sort((x, y) => (y.end ?? 0) - (x.end ?? 0) || y.start - x.start).slice(KEEP_DONE).forEach((a) => n.agents.delete(a.key));
   const list = [...n.agents.values()];
   if (!list.length) { // 카드를 다 지우면 카드 줄과 케이블도 걷는다
     n.el.querySelector('.wire')?.remove();

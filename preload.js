@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('api', {
   addWorktree: (repo, branch) => ipcRenderer.invoke('git:worktree-add', repo, branch),
   stopAgent: (agentId) => ipcRenderer.send('agent:stop', agentId),
   readTranscript: (file) => ipcRenderer.invoke('agent:transcript', file),
+  agentInterrupted: (file) => ipcRenderer.invoke('agent:interrupted', file),
   listPaths: (extra) => ipcRenderer.invoke('paths:list', extra),
   loadBoard: () => ipcRenderer.invoke('board:load'),
   saveBoard: (board) => ipcRenderer.send('board:save', board),
