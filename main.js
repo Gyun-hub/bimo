@@ -9,6 +9,7 @@ const board = require('./lib/board');
 const codex = require('./lib/codex');
 const doc = require('./lib/doc');
 const transcript = require('./lib/transcript');
+const { startWait } = require('./lib/waits');
 const { t } = require('./locales');
 
 // --smoke: 기본 보드로 띄워 스크린샷(%TEMP%\bimo-smoke.png)만 찍고 종료. 저장된 보드는 건드리지 않는다.
@@ -49,14 +50,14 @@ const STOP_REPLY = JSON.stringify({
 // 보드의 세션 목록과 사용자가 케이블로 이은 연결은 렌더러가 알려준다. 연결된 세션끼리만 호출할 수 있다.
 let roster = []; // { id, name, agent, command, folder, state }
 let links = []; // { a, b } 노드 id, 방향 없음
-const waits = new Map(); // 받는 노드 id -> { callId, resolve, timer }
+const waits = new Map(); // 받는 노드 id -> { callId, done, name } (lib/waits.js)
 let callSeq = 0;
 ipcMain.on('roster:set', (e, r, l) => { roster = r; links = l; });
 
 const linked = (a, b) => links.some((l) => (l.a === a && l.b === b) || (l.a === b && l.b === a));
 const STATE_KO = { working: '일하는 중', waiting: '사용자를 기다리는 중', idle: '대기 중', exited: '종료됨' };
 
-function mcpRoute(caller, route, body) {
+function mcpRoute(caller, route, body, res) {
   const me = roster.find((s) => s.id === caller);
   if (!me) return Promise.resolve({ error: '이 세션을 보드에서 찾지 못했습니다.' });
   if (route === 'sessions') {
@@ -86,16 +87,13 @@ function mcpRoute(caller, route, body) {
     return Promise.resolve({ result: `"${target.name}" 세션에 보냈습니다. 답은 기다리지 않습니다.` });
   }
   const timeoutMs = Math.min(Math.max(Number(body.timeout) || 600, 10), 3600) * 1000;
-  return new Promise((resolve) => {
-    const done = (r) => {
-      clearTimeout(timer);
-      waits.delete(target.id);
-      send('call:end', callId);
-      resolve(r);
-    };
-    const timer = setTimeout(() => done({ result: `${timeoutMs / 1000}초 동안 "${target.name}" 세션의 답이 끝나지 않았습니다. 그 세션은 계속 작업 중일 수 있습니다.` }), timeoutMs);
-    waits.set(target.id, { callId, done, name: target.name });
-  });
+  const { promise, done } = startWait(waits, target.id, { callId, name: target.name }, timeoutMs,
+    { result: `${timeoutMs / 1000}초 동안 "${target.name}" 세션의 답이 끝나지 않았습니다. 그 세션은 계속 작업 중일 수 있습니다.` },
+    () => send('call:end', callId));
+  // 보낸 쪽(MCP 서버·Claude)이 끊기면 받을 이가 없다 — 받는 세션이 최대 1시간 "일하는 중"으로 묶이지 않게 바로 푼다.
+  // close 는 정상 응답 뒤에도 오지만 done 은 한 번만 끝낸다.
+  res?.on('close', () => done({ error: '호출한 쪽 연결이 끊겼습니다.' }));
+  return promise;
 }
 
 // 받는 세션의 응답이 끝나면(Stop) 기다리던 호출에 답을 돌려준다. transcript 기록이 늦을 수 있어 잠시 뒤에 읽는다.
@@ -116,6 +114,7 @@ const hookServer = http.createServer((req, res) => {
   const [, kind, token, rawId, route] = req.url.split('/');
   if (token !== hookToken || req.headers.host !== `127.0.0.1:${hookPort}`) return res.writeHead(403).end();
   let body = '';
+  req.setEncoding('utf8'); // 조각 경계에 걸린 한글이 깨지지 않게 (상한은 글자 수로 센다)
   req.on('data', (chunk) => {
     body += chunk;
     if (body.length > HOOK_MAX_BODY) req.destroy();
@@ -125,7 +124,7 @@ const hookServer = http.createServer((req, res) => {
     if (kind === 'mcp') {
       let parsed = {};
       try { parsed = body ? JSON.parse(body) : {}; } catch {}
-      mcpRoute(id, route, parsed).then((r) => res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(r)));
+      mcpRoute(id, route, parsed, res).then((r) => res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(r)));
       return;
     }
     let reply = '{}';
@@ -389,10 +388,13 @@ ipcMain.handle('pty:spawn', (e, { id, command, cwd, cols, rows, sessionId }) => 
     // node-pty 에 같이 들어 있는 최신 conpty.dll/OpenConsole.exe 를 쓴다(VS Code·오르카와 같은 방식).
     // BIMO_INBOX_CONPTY=1 은 비교 테스트용으로 기본 ConPTY 를 강제한다.
     const useConptyDll = !process.env.BIMO_INBOX_CONPTY;
+    // 화면을 다시 불러오면(Ctrl+R) 같은 id 로 다시 온다 — 옛 pty 를 고아로 남기지 않게 끈다. AI 바꾸기는 exit 뒤에 오므로 여기 안 걸린다.
+    ptys.get(id)?.kill();
     const p = pty.spawn(shell, args, { name: 'xterm-256color', cwd: dir, cols, rows, env: childEnv(), ...(isWin && { useConptyDll }) });
     const entry = isCodex ? { at: spawnAt, cwd: dir, sid: resumeId } : null;
-    p.onData((data) => send('pty:data', id, data));
+    p.onData((data) => ptys.get(id) === p && send('pty:data', id, data));
     p.onExit(({ exitCode }) => {
+      if (ptys.get(id) !== p) return; // 같은 id 로 새로 띄운 pty 가 있으면 그쪽의 자리·대기·화면을 건드리지 않는다
       ptys.delete(id);
       if (entry && codexNodes.get(id) === entry) codexNodes.delete(id); // 다시 띄운 새 엔트리는 남긴다
       waits.get(id)?.done({ error: '받는 세션이 종료돼 답을 받지 못했습니다.' });
@@ -751,6 +753,8 @@ ipcMain.handle('files:list', async (e, dir) => {
   // .gitignore 에 걸린 것도 보여 주되(흐리게), 의존성·빌드 결과처럼 무거운 폴더만 숨긴다. git 저장소가 아니면 그대로.
   const ignored = new Set(await new Promise((resolve) => {
     const p = execFile('git', ['-C', dir, 'check-ignore', '--stdin', '-z'], { windowsHide: true }, (err, out) => resolve(out ? out.split('\0').filter(Boolean) : []));
+    // 저장소가 아니면 git 이 stdin 을 다 읽기 전에 끝나 쓰기가 EOF/EPIPE 로 실패한다 — 결과는 콜백이 [] 로 받는다.
+    p.stdin.on('error', () => {});
     p.stdin.end(ents.map((d) => d.name).join('\0') + '\0');
   }));
   return ents
@@ -1016,8 +1020,13 @@ ipcMain.handle('app:version', () => app.getVersion());
 ipcMain.on('settings:lang', (e, l) => { if (l === 'ko' || l === 'en') lang = l; });
 ipcMain.handle('update:check', () => checkUpdate(true));
 ipcMain.on('update:install', () => {
+  if (!updater) return;
   closeConfirmed = true; // 다시 시작은 사용자가 고른 것이라 종료 확인을 건너뛴다
-  updater?.quitAndInstall(false, true);
+  // 설치 파일이 없거나 실행을 못 하면 quitAndInstall 이 'error' 만 (동기로) 내고 앱은 그대로 남는다 → 종료 확인을 되살린다
+  const fail = () => { closeConfirmed = false; };
+  updater.once('error', fail);
+  try { updater.quitAndInstall(false, true); } catch { fail(); }
+  updater.off('error', fail);
 });
 ipcMain.on('update:open', (e, url) => { if (/^https?:\/\//.test(url)) require('electron').shell.openExternal(url); });
 app.on('window-all-closed', () => {

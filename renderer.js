@@ -923,13 +923,14 @@ async function addNode(data) {
     // Space: 공백은 누르는 즉시 보내고, 꾹 누르면(반복 keydown) 이동 모드. 실제로 끌기 시작하면 그 공백을 지운다(viewport pointerdown). 한글 조합 중(229)은 건드리지 않는다.
     if (e.code === 'Space' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
       if (e.type !== 'keydown') return false;
-      if (!e.repeat) { spaceClean = true; if (imeEnd) setTimeout(() => term.input(' '), 0); else term.input(' '); }
+      // 한글을 빠르게 치면 compositionend 바로 뒤 Space keydown 이 repeat=true 로 온다(2026-11-03 실측) — 그때도 새 누름이다.
+      if (!e.repeat || imeEnd) { spaceClean = true; if (imeEnd) setTimeout(() => term.input(' '), 0); else term.input(' '); }
       else if (spaceClean) { spaceClean = false; if (tool !== 'hand') { spaceHand = true; spaceFrom = data.id; setTool('hand', true); } }
       else if (!spaceHand) return true; // 이미 공백을 보낸 뒤의 반복(다른 키가 끼었을 때)은 예전처럼 공백
       e.preventDefault(); // keypress·input 으로 공백이 새지 않게
       return false;
     }
-    if (e.type === 'keydown') spaceClean = false;
+    if (e.type === 'keydown') { spaceClean = false; spaceFrom = null; } // 다른 키가 끼면 끌 때 지울 공백도 없다(방금 친 글자를 지우지 않게)
     if (e.key === 'Backspace' && (isMac ? e.metaKey && !e.ctrlKey : e.altKey && !e.ctrlKey && !e.metaKey)) {
       if (e.type === 'keydown') {
         e.preventDefault();
@@ -1250,7 +1251,7 @@ viewport.addEventListener('pointerdown', (e) => {
   if (tool !== 'hand' || e.target.closest('#corner, #cast, #keys')) return;
   if (boardEl.classList.contains('far') && e.target.closest('.group-cover')) return; // 멀리 보기 덮개 끌기는 V 와 같이 dragGroup 이 맡는다
   e.stopImmediatePropagation(); // 같은 viewport 의 선택(사각형) 리스너까지 막는다
-  document.activeElement?.blur();
+  if (!spaceHand || !document.activeElement?.closest?.('.xterm')) document.activeElement?.blur(); // 터미널 Space 이동은 포커스를 남겨 떼자마자 이어 친다(가운데 버튼 이동처럼)
   // pointerdown 기본 동작을 막아 xterm 의 mousedown(텍스트 선택)도 생기지 않는다.
   // 터미널 Space 꾹으로 들어온 이동이면 실제로 움직이는 첫 순간에 미리 보낸 공백을 한 번 지운다.
   drag(e, (dx, dy) => { if (spaceFrom) { api.write(spaceFrom, '\x7f'); spaceFrom = null; } pan(dx, dy); });
@@ -2022,6 +2023,19 @@ api.appVersion().then((v) => {
 // 업데이트 뒤 처음 켜면 바뀐 점 목록. "닫기" 는 다음에 켤 때 또 뜨고, "다시 보지 않기" 는 이 버전에서 다시 안 뜬다.
 // 버전을 올릴 때 맨 위에 한 덩어리 추가한다.
 const CHANGES = [
+  { v: '1.2.3', items: [
+    { ko: '한글을 빠르게 치고 Space 를 누르면 띄어쓰기가 씹히던 문제를 고쳤습니다.', en: 'Fixed spaces being dropped when pressing Space right after fast Korean typing.' },
+    { ko: 'Space 를 꾹 눌러 보드를 옮긴 뒤에도 터미널에서 바로 이어 칠 수 있습니다.', en: 'After holding Space to pan the board, you can keep typing in the terminal right away.' },
+    { ko: '업데이트 뒤 "바뀐 점" 창이 엉뚱한 버전(v1.0.0)을 보여 주던 문제를 고쳤습니다.', en: 'Fixed the "What\'s new" window showing the wrong version (v1.0.0) after an update.' },
+    { ko: '파일이 아주 많은 폴더를 열 때 오류 창이 뜨던 문제를 고쳤습니다.', en: 'Fixed an error window appearing when opening a folder with a huge number of files.' },
+    { ko: '케이블로 말을 건 세션을 닫으면 받는 세션이 한동안 막히던 문제를 고쳤습니다.', en: 'Fixed the receiving session getting stuck for a while when the session that messaged it over a cable was closed.' },
+  ] },
+  { v: '1.2.2', items: [
+    { ko: '터미널에서 Space 가 누르는 즉시 입력됩니다. 꾹 누른 채 끌면 보드가 움직이고, 그때 찍힌 공백은 지워집니다.', en: 'Space now types instantly in the terminal. Hold and drag to pan the board; the space typed then is removed.' },
+    { ko: 'Windows "입력하는 동안 포인터 숨기기" 를 켜 둬도 Space 꾹 이동 중 커서가 사라지지 않습니다.', en: 'The pointer no longer disappears while holding Space to pan, even with Windows "Hide pointer while typing" on.' },
+    { ko: '서브 에이전트를 Esc·권한 거부로 멈추면 카드가 "실행 중"으로 남던 문제를 고쳤습니다.', en: 'Fixed sub-agent cards staying "running" after stopping them with Esc or a denied permission.' },
+    { ko: '끝난 서브 에이전트 카드는 세션마다 최근 10개만 남겨 오래 켜 둬도 가볍습니다.', en: 'Only the last 10 finished sub-agent cards are kept per session, so long sessions stay light.' },
+  ] },
   { v: '1.2.1', items: [
     { ko: '+ 를 누르면 깔린 AI(Claude Code·Codex·PowerShell 등) 중에서 골라 실행합니다.', en: 'Clicking + now lets you pick which installed AI (Claude Code, Codex, PowerShell, …) to start.' },
     { ko: '사이드바 프로젝트에 [세션 목록] 버튼이 생겼습니다. 그 프로젝트에서 했던 대화를 골라 이어 엽니다.', en: 'Sidebar projects have a new [Sessions] button to reopen past conversations from that project.' },
@@ -2053,7 +2067,9 @@ const CHANGES = [
 // 버전 하나가 한 장. 좌우 버튼·점·←/→ 키로 넘긴다. 첫 장 = 지금 버전.
 let newsShown = [], newsAt = 0;
 function openNews(v) {
-  newsShown = CHANGES.slice(CHANGES.findIndex((c) => c.v === v));
+  const at = CHANGES.findIndex((c) => c.v === v);
+  if (at < 0) return; // 목록에 없는 버전이면 slice(-1) 로 1.0.0 이 뜬다
+  newsShown = CHANGES.slice(at);
   $('news-track').replaceChildren(...newsShown.map((c) => {
     const ul = el('ul');
     ul.append(...c.items.map((t) => el('li', null, typeof t === 'string' ? t : t[lang] ?? t.ko))); // 1.1.0 부터 { ko, en }, 이전 기록은 원문
