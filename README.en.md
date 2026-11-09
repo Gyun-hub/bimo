@@ -2,72 +2,97 @@
 
 <h1 align="center">Bimo</h1>
 
-<p align="center">A desktop app that lays out your AI coding CLI terminals on one board so you can run them side by side</p>
+<p align="center">A desktop app that lays out your AI coding CLI terminals on an infinite board to run them side by side</p>
 
 <p align="center"><a href="README.md">한국어</a> · English</p>
 
-Run Claude Code, Codex and other AI CLIs across several projects at once and the terminal windows pile up fast. Bimo puts those terminals on an infinite board as cards and shows at a glance which session is working and which one has finished answering.
+<p align="center">
+  <img src="docs/images/bimo-overview.png" width="850" alt="Bimo Board Overview">
+</p>
+
+Running Claude Code, Codex, and other AI CLIs across multiple projects quickly piles up terminal windows. Bimo arranges those terminals as interactive cards on an infinite canvas, showing at a glance which sessions are working and which have finished answering.
 
 ## Features
 
-- **Board** — Place sessions as cards and drag them around. Minimap, zoom, auto-arrange by folder.
-- **AI CLI detection** — Only the CLIs you have installed show up in the launcher.
-  Claude Code · Codex · Gemini · Qwen Code · OpenCode · Aider · Cursor · Copilot · Amp (PowerShell is always available)
-- **Status** — Working / answered / failed shown as card colors. A list of answers you haven't checked yet.
-- **Resume sessions** — Drag an AI conversation you started in another terminal onto the board to continue it.
-- **Project sidebar** — Group sessions by folder, set project colors, launch on a specific git branch.
-- **Send** — Type `@session-name task` to send input straight to that session (`Ctrl+K`).
-- **Session collaboration (MCP)** — Sessions connected with a cable can talk to each other through Claude. The app attaches a `bimo` MCP server (`list_sessions`, `send_to_session`). Connections use `127.0.0.1` and a token generated fresh on every launch.
-- **File viewer** — Find and open files inside the board, with Markdown preview.
-- **Terminal conveniences** — Paste screenshots, open OSC 8 links, drag-select even in mouse-mode apps.
-- **Auto update** — Downloads new versions from GitHub Releases.
+- **Infinite Canvas Board** — Place sessions as cards and freely drag or resize them. Includes minimap, zoom controls, and auto-arrange by folder.
+<p align="center">
+  <img src="docs/images/bimo-layout-demo.gif" width="720" alt="Board Card Drag & Layout Demo">
+</p>
 
-## Install
+- **Session Collaboration (MCP)** — Connect sessions with a visual cable so Claude instances can talk and delegate tasks to each other. Bimo automatically attaches an internal MCP server (`list_sessions`, `send_to_session`). Secured via `127.0.0.1` and fresh launch tokens.
+<p align="center">
+  <img src="docs/images/bimo-mcp-demo.gif" width="720" alt="MCP Session Collaboration Demo">
+</p>
 
-Download from [Releases](https://github.com/Gyun-hub/bimo/releases).
+- **Status Indicators & Response Alerts** — Card border colors highlight working, answered, or failed states. Includes a dedicated list and badges for unread responses.
+<p align="center">
+  <img src="docs/images/bimo-status.png" width="720" alt="Session Status and Notifications">
+</p>
 
-| OS | File |
+- **Pixel Character Avatars** — Assign cute pixel art characters (chick, slime, cat, cactus pot, robot, goldfish, etc.) to each session card for instant visual identification.
+<p align="center">
+  <img src="docs/images/bimo-characters.png" width="600" alt="Custom Pixel Characters">
+</p>
+
+- **AI CLI Auto-Detection** — Automatically discovers and lists only installed CLIs in the launcher:
+  Claude Code · Codex · Gemini · Qwen Code · OpenCode · Aider · Cursor · Copilot · Amp (PowerShell is always available).
+- **Resume Sessions** — Drag and drop an AI conversation log from another terminal onto the board to resume right where you left off.
+- **Project Sidebar** — Group sessions by project folder, assign color tags, and launch directly on specific git branches.
+- **Quick Send (Broadcast)** — Type `@session-name task` to dispatch input directly to any session (`Ctrl+K`).
+- **In-Board File Explorer** — Search and open project files directly on the board with Markdown preview.
+<p align="center">
+  <img src="docs/images/bimo-files.png" width="600" alt="In-Board File Explorer">
+</p>
+
+- **Terminal Utilities** — Clipboard image pasting, clickable OSC 8 hyperlinks, and drag-to-select even in mouse-mode CLI apps.
+- **Auto-Updates** — Checks and downloads the latest releases automatically via GitHub Releases.
+
+## Installation
+
+Download the latest prebuilt binaries from [Releases](https://github.com/Gyun-hub/bimo/releases).
+
+| OS | Package |
 |---|---|
 | Windows (x64) | `Bimo-Setup-<version>.exe` |
 | macOS (Apple Silicon / Intel) | `.dmg` |
 
-- The Windows installer is not code-signed, so SmartScreen shows a warning. Click "More info → Run anyway".
-- The macOS build is not signed or notarized either. The first time, right-click → Open. Auto update does not work on macOS.
+- Windows installers are not code-signed; Windows SmartScreen may show a warning. Click "More info → Run anyway".
+- macOS builds are also not signed/notarized. On first launch, right-click the app and choose "Open". (Auto-updates are not supported on macOS).
 
-Install the AI CLIs separately (for example `npm i -g @anthropic-ai/claude-code`). Bimo finds and uses the CLIs on your PATH.
+> **Note**: Install your desired AI CLIs separately (e.g., `npm i -g @anthropic-ai/claude-code`). Bimo automatically locates CLIs registered in your system `PATH`.
 
-## Data
+## Data Storage
 
-| Location | Contents |
+| Path | Description |
 |---|---|
-| `%APPDATA%\Bimo\board.json` (Windows) / `~/Library/Application Support/Bimo` (macOS) | Board layout and sessions |
-| `Local Storage` in the same folder | Settings |
+| `%APPDATA%\Bimo\board.json` (Windows) / `~/Library/Application Support/Bimo` (macOS) | Board layouts and session states |
+| `Local Storage` within the same directory | Application settings |
 
-You can change the data folder with the `BIMO_USER_DATA` environment variable (for example to keep a separate test board).
+You can customize the storage directory by setting the `BIMO_USER_DATA` environment variable.
 
-## Development
+## Development & Build
 
-Built against Node.js 22.
+Requires Node.js 22+.
 
 ```bash
 npm install
-npm start                 # run in development
-npm run smoke             # launch with the default board, take a screenshot (%TEMP%\bimo-smoke.png) and quit
-npm run dist:win          # Windows installer → release/
-npm run dist:mac          # macOS dmg/zip (on macOS)
+npm start                 # Run local development mode
+npm run smoke             # Launch default board, take screenshot (%TEMP%\bimo-smoke.png) and exit
+npm run dist:win          # Build Windows installer → release/
+npm run dist:mac          # Build macOS dmg/zip (on macOS)
 ```
 
-The icon is drawn as 16×16 pixel art by `tools/make-icon.py` (requires Pillow).
+The app icon is generated as 16×16 pixel art via `tools/make-icon.py` (requires Pillow).
 
 ```bash
-python -I tools/make-icon.py   # build/icon.png · icon.ico · icon.icns
+python -I tools/make-icon.py   # Generates build/icon.png · icon.ico · icon.icns
 ```
 
-### Releases
+### Release Automation
 
-Bump `version` in `package.json` and merge into `main`. `.github/workflows/release.yml` then builds the Windows and Mac installers and publishes them as the `v<version>` Release. If a Release for that version already exists, the build is skipped.
+Bumping `version` in `package.json` and merging into `main` automatically triggers `.github/workflows/release.yml`, which compiles Windows/macOS binaries and publishes a GitHub Release.
 
-### Stack
+### Tech Stack
 
 Electron · xterm.js · node-pty (`@lydell/node-pty`) · CodeMirror 5 · marked + DOMPurify · electron-builder · electron-updater
 
