@@ -4,7 +4,9 @@
 
 <p align="center">A desktop app that lays out your AI coding CLI terminals on an infinite board to run them side by side</p>
 
-<p align="center"><a href="README.md">한국어</a> · English</p>
+<p align="center">
+  <a href="README.md">한국어</a> · <b>English</b>
+</p>
 
 <p align="center">
   <img src="docs/images/bimo-overview.png" width="850" alt="Bimo Board Overview">
@@ -36,6 +38,7 @@ Running Claude Code, Codex, and other AI CLIs across multiple projects quickly p
 
 - **AI CLI Auto-Detection** — Automatically discovers and lists only installed CLIs in the launcher:
   Claude Code · Codex · Gemini · Qwen Code · OpenCode · Aider · Cursor · Copilot · Amp (PowerShell is always available).
+- **Multilingual Support (i18n)** — Full out-of-the-box UI and notification support for both English and Korean.
 - **Resume Sessions** — Drag and drop an AI conversation log from another terminal onto the board to resume right where you left off.
 - **Project Sidebar** — Group sessions by project folder, assign color tags, and launch directly on specific git branches.
 - **Quick Send (Broadcast)** — Type `@session-name task` to dispatch input directly to any session (`Ctrl+K`).

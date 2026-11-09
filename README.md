@@ -4,7 +4,9 @@
 
 <p align="center">AI 코딩 CLI 터미널을 한 보드 위에 펼쳐 두고 같이 굴리는 데스크톱 앱</p>
 
-<p align="center">한국어 · <a href="README.en.md">English</a></p>
+<p align="center">
+  <b>한국어</b> · <a href="README.en.md">English</a>
+</p>
 
 <p align="center">
   <img src="docs/images/bimo-overview.png" width="850" alt="Bimo 보드 메인 화면">
@@ -36,6 +38,7 @@
 
 - **AI CLI 자동 감지** — 설치된 CLI 만 런처에 노출.
   Claude Code · Codex · Gemini · Qwen Code · OpenCode · Aider · Cursor · Copilot · Amp (PowerShell 은 항상 지원)
+- **다국어 지원 (i18n)** — 앱 전체 UI 및 알림에 한국어와 영어(English) 완벽 지원.
 - **세션 이어 열기** — 다른 터미널에서 진행하던 AI 대화를 보드로 끌어다 놓으면 즉시 이어서 실행.
 - **프로젝트 사이드바** — 폴더별 세션 그룹화, 프로젝트별 색상 지정, Git 브랜치 지정 실행.
 - **빠른 전송 (Broadcast)** — `@세션이름 할 일` 로 원하는 세션에 즉시 입력 전달 (`Ctrl+K`).
