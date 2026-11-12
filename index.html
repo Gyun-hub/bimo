@@ -28,7 +28,12 @@
       <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
     </button>
     <span class="header-gap"></span>
-    <button id="add" class="launch" title="새 세션 (Ctrl+N)" data-i18n-title="ui.h.addTitle" data-i18n="ui.h.add">+ 새 세션</button>
+    <div class="launch-split">
+      <button id="add" class="launch" title="새 세션 (Ctrl+N)" data-i18n-title="ui.h.addTitle" data-i18n="ui.h.add">+ 새 세션</button><button id="add-more" class="launch" aria-haspopup="menu" aria-expanded="false" aria-controls="add-menu" data-i18n-title="ui.sched.more" data-i18n-aria="ui.sched.more">▾</button>
+      <div id="add-menu" role="menu" hidden>
+        <button id="sched-btn" class="gm-item" role="menuitem" data-i18n-title="ui.sched.menuTitle" data-i18n="ui.sched.menu">⏰ 예약…</button>
+      </div>
+    </div>
     <div class="importer">
       <button id="import" aria-haspopup="dialog" aria-expanded="false" title="다른 터미널에서 했던 AI 대화를 보드에서 이어서 엽니다" data-i18n-title="ui.h.importTitle" data-i18n="ui.import">세션 가져오기</button>
       <div id="import-pop" hidden role="dialog" aria-label="세션 가져오기" data-i18n-aria="ui.import">
@@ -42,6 +47,10 @@
   <div id="collab-pop" hidden role="dialog" aria-label="협업할 세션" data-i18n-aria="ui.h.collabPop"></div>
   <div id="alias-pop" hidden role="dialog" aria-label="프로젝트 묶음" data-i18n-aria="ui.h.aliasPop"></div>
   <div id="group-menu" hidden role="menu"></div>
+  <div id="quick-open" hidden role="dialog" aria-label="빠른 파일 열기" data-i18n-aria="ui.h.quickOpen">
+    <input id="qo-input" placeholder="파일 이름으로 찾기, Enter 로 열기" data-i18n-ph="ui.h.quickPh" autocomplete="off" spellcheck="false">
+    <ul id="qo-list" role="listbox"></ul>
+  </div>
   <div id="news" hidden>
     <div class="news-box" role="dialog" aria-modal="true" aria-labelledby="news-title">
       <h2 id="news-title"></h2>
@@ -104,6 +113,42 @@
       <button id="folder-browse" type="button" data-i18n="ui.h.folderBrowse">다른 폴더 찾아보기…</button>
     </div>
   </div>
+  <!-- 예약: 목록 ↔ 만들기·고치기(같은 창, .sched-form 을 보이고 숨긴다) -->
+  <div id="sched-pop" hidden>
+    <div class="sched-box" role="dialog" aria-modal="true" aria-label="예약" data-i18n-aria="ui.sched.dialog">
+      <div class="sched-head"><span class="new-title" data-i18n="ui.sched.title">⏰ 예약</span><span class="sched-gap"></span><button class="sched-add" type="button" data-i18n="ui.sched.add">+ 새 예약</button><button class="sched-x icon-btn" type="button" aria-label="닫기" data-i18n-aria="ui.close">×</button></div>
+      <div class="sched-body">
+        <div class="sched-list"></div>
+        <form class="sched-form" hidden>
+          <div class="sched-col sched-main">
+            <label><span data-i18n="ui.sched.folder"></span><select name="cwd"></select><span class="sched-path"></span></label>
+            <label><span data-i18n="ui.sched.prompt"></span><textarea name="prompt" data-i18n-ph="ui.sched.promptPh"></textarea></label>
+          </div>
+          <div class="sched-col sched-side">
+            <label><span data-i18n="ui.sched.repeat"></span><select name="repeat">
+              <option value="once" data-i18n="ui.sched.once"></option><option value="daily" data-i18n="ui.sched.daily"></option><option value="weekdays" data-i18n="ui.sched.weekdaysOpt"></option><option value="weekly" data-i18n="ui.sched.weeklyOpt"></option><option value="hours" data-i18n="ui.sched.hoursOpt"></option>
+            </select></label>
+            <div class="sched-when">
+              <label data-for="once hours"><span data-i18n="ui.sched.start"></span><input type="datetime-local" name="start"></label>
+              <label data-for="hours"><span data-i18n="ui.sched.interval"></span><span class="sched-inline"><input type="number" name="hours" min="1" max="168"> <span data-i18n="ui.sched.hoursSuffix"></span></span></label>
+              <label data-for="daily weekdays weekly"><span data-i18n="ui.sched.time"></span><input type="time" name="time"></label>
+              <div class="sched-days" data-for="weekly" role="group" aria-label="요일" data-i18n-aria="ui.sched.days"></div>
+            </div>
+            <fieldset><legend data-i18n="ui.sched.out"></legend>
+              <label class="sched-opt"><input type="radio" name="out" value="session"><span class="sched-opt-t" data-i18n="ui.sched.outSession"></span><span class="sched-opt-d" data-i18n="ui.sched.outSessionD"></span></label>
+              <label class="sched-opt"><input type="radio" name="out" value="result"><span class="sched-opt-t" data-i18n="ui.sched.outResult"></span><span class="sched-opt-d" data-i18n="ui.sched.outResultD"></span></label>
+              <div class="sched-trust" hidden><span data-i18n="ui.sched.trustWarn"></span><button type="button" class="sched-trust-go" data-i18n="ui.sched.trustGo"></button></div>
+            </fieldset>
+            <label><span data-i18n="ui.sched.perm"></span><select name="perm">
+              <option value="ask" data-i18n="ui.sched.permAskD"></option><option value="read" data-i18n="ui.sched.permReadD"></option><option value="edit" data-i18n="ui.sched.permEditD"></option>
+            </select></label>
+            <p class="sched-note" data-i18n="ui.sched.permNote"></p>
+          </div>
+          <div class="sched-foot"><p class="sched-err" role="alert"></p><span class="sched-gap"></span><button type="button" class="sched-cancel" data-i18n="ui.cancel"></button><button type="submit" class="sched-save" data-i18n="ui.sched.save"></button></div>
+        </form>
+      </div>
+    </div>
+  </div>
   <aside id="sidebar" hidden>
     <div class="side-resize" title="끌어서 사이드바 폭 바꾸기" data-i18n-title="ui.h.sideResize"></div>
     <div class="side-head">
@@ -118,6 +163,7 @@
         <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
     </div>
+    <div class="side-search"><input id="side-search" placeholder="프로젝트·브랜치·별칭 찾기" data-i18n-ph="ui.h.sideSearch" autocomplete="off" spellcheck="false"></div>
     <div id="side-list"></div>
     <div id="side-files" hidden>
       <div class="files-head">
@@ -127,6 +173,9 @@
       <div class="files-tools">
         <input id="files-search" placeholder="파일 이름으로 찾기" data-i18n-ph="ui.h.filesSearch" autocomplete="off" spellcheck="false">
         <label class="files-changed"><input type="checkbox" id="files-only-changed"> <span data-i18n="ui.h.onlyChanged">변경만</span></label>
+        <button id="files-quick" class="icon-btn" type="button" title="빠른 파일 열기 (Ctrl+P / ⌘P)" aria-label="빠른 파일 열기" data-i18n-title="ui.h.quickOpenTitle" data-i18n-aria="ui.h.quickOpen">
+          <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h5l3 3v8H4zM9 2.5v3h3M6.5 10.5l1.2-1.2M9.5 9a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" stroke-linecap="round"/></svg>
+        </button>
       </div>
       <div id="files-tree" role="tree"></div>
     </div>
@@ -147,6 +196,7 @@
       <div id="doc-code"></div>
       <div class="doc-split" title="끌어서 좌우 폭 바꾸기" data-i18n-title="ui.h.docSplit"></div>
       <article id="doc-md" class="md-view"></article>
+      <div id="doc-view"></div>
     </div>
   </section>
   <main id="viewport">
@@ -169,6 +219,7 @@
         <dt><kbd>Ctrl</kbd> + <span data-i18n="ui.k.sessClick">세션 클릭</span></dt><dd data-i18n="ui.k.multi">여러 세션 고르기</dd>
         <dt><kbd>Ctrl</kbd> + <kbd>1</kbd>~<kbd>9</kbd></dt><dd data-i18n="ui.k.num">그 번호 세션으로 가기</dd>
         <dt><kbd>Ctrl</kbd> + <kbd>K</kbd></dt><dd data-i18n="ui.k.cast">보내기 창 열기</dd>
+        <dt><kbd>Ctrl</kbd> + <kbd>P</kbd></dt><dd data-i18n="ui.k.quick">빠른 파일 열기 (터미널 밖에서)</dd>
         <dt><kbd>Alt</kbd> + <kbd>Backspace</kbd></dt><dd data-i18n="ui.k.clear">입력한 프롬프트 통째로 지우기</dd>
         <dt><kbd>@</kbd><span data-i18n="ui.k.mentionDt">이름</span></dt><dd data-i18n="ui.k.mentionDd">그 세션에 보내기</dd>
         <dt><span data-i18n="ui.k.collabDt">세션 오른쪽 위</span> <kbd data-i18n="ui.k.collabKbd">협업</kbd></dt><dd data-i18n="ui.k.collabDd">협업할 세션을 체크로 고름. 협업하는 세션끼리 서로 일을 맡기고 답을 받음. 파랑 = 아직 없음, 초록 = 있음</dd>
@@ -241,6 +292,7 @@
   <script src="node_modules/marked/lib/marked.umd.js"></script>
   <script src="node_modules/dompurify/dist/purify.min.js"></script>
   <script src="locales.js"></script>
+  <script src="lib/sched-time.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

@@ -21,6 +21,7 @@ const ZOOM_MIN = 0.1;
 const ZOOM_MAX = 4;
 let topZ = 1;
 let saveTimer;
+let schedules = []; // 예약 (아래 '예약' 절)
 
 const basename = (p) => (p ? p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() : tr('ui.home'));
 const el = (tag, cls, text) => Object.assign(document.createElement(tag), cls ? { className: cls } : {}, text != null ? { textContent: text } : {});
@@ -85,7 +86,7 @@ function flushSave() {
 }
 
 // board.json 에 저장하는 내용. 프로젝트 색(groupColors)도 여기 들어가 재실행해도 유지된다.
-const boardData = () => ({ view, nodes: [...nodes.values()].map((n) => n.data), cards: [...cards.values()].map((c) => c.data), links, groupColors });
+const boardData = () => ({ view, nodes: [...nodes.values()].map((n) => n.data), cards: [...cards.values()].map((c) => c.data), links, groupColors, schedules });
 
 // --- 세션끼리 호출: 사용자가 케이블로 이은 세션만 서로 부를 수 있다 ---
 
@@ -1037,6 +1038,9 @@ async function addNode(data) {
   if (nodes.has(data.id)) return; // 같은 id 로 두 번 만들면 pty 가 덮어써져 종료 때 정리되지 않는다
   // claude 는 앱이 세션 id 를 정해 두고 다음 실행 때 그 id 로 이어한다
   if (data.command === 'claude') data.sessionId ??= crypto.randomUUID();
+  // 예약 실행 권한은 처음 띄울 때만 쓴다(저장하지 않아 다시 실행하면 기본 권한)
+  let perm = data.perm;
+  delete data.perm;
   data.name ??= uniqueName(basename(data.cwd));
   const node = el('div', 'node');
   node.innerHTML = `<div class="head"><span class="agent"></span><span class="where"></span><span class="tokens"></span><span class="ended">${tr('ui.node.ended')}</span><button class="restart">${tr('ui.node.restart')}</button><button class="files-btn icon-btn" title="${tr('ui.node.filesTitle')}" aria-label="${tr('ui.node.files')}"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></button><button class="critter-btn icon-btn" title="${tr('ui.critter.pickTitle')}" aria-label="${tr('ui.critter.pick')}"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6V3.5L6 5h4l2-1.5V6a5 5 0 0 1 1 3c0 2.5-2.2 4-5 4s-5-1.5-5-4a5 5 0 0 1 1-3z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="6.3" cy="8.6" r=".9" fill="currentColor"/><circle cx="9.7" cy="8.6" r=".9" fill="currentColor"/></svg></button><button class="close" aria-label="${tr('ui.node.close')}">×</button><button class="link-state"><span class="link-label"></span><span class="link-list"></span></button></div><div class="body"></div>${['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'].map((d) => `<div class="rz rz-${d}" data-dir="${d}"></div>`).join('')}<div class="port" title="${tr('ui.node.port')}"></div>${critterHtml(Object.hasOwn(CRITTERS, data.critter) ? data.critter : pickCritter())}`;
@@ -1280,7 +1284,8 @@ async function addNode(data) {
     n.resyncTimer = setTimeout(() => api.resize(data.id, term.cols, term.rows), 400);
   });
   const start = async () => {
-    const warn = await api.spawn({ id: data.id, command: data.command, cwd: data.cwd, cols: term.cols, rows: term.rows, sessionId: data.sessionId });
+    const warn = await api.spawn({ id: data.id, command: data.command, cwd: data.cwd, cols: term.cols, rows: term.rows, sessionId: data.sessionId, perm });
+    perm = undefined;
     if (warn) term.write(`\x1b[33m${warn.error ?? warn}\x1b[0m\r\n`);
     // 실행 실패({ error })면 pty 가 없다 → 끝난 카드로 둔다(AI 바꾸기·다시 시작이 exit 를 기다리지 않게)
     if (warn?.error) { n.exited = true; node.classList.add('exited'); paintState(n); }
@@ -2291,7 +2296,8 @@ $('quit-pop').addEventListener('pointerdown', (e) => { if (e.target === $('quit-
 // X·Cmd+Q 를 누르면 메인이 묻는다
 api.onConfirmClose(async (running) => {
   const unsaved = docs.filter((d) => d.dirty).length;
-  const ok = await confirmBox(tr('ui.quit.title'), `${tr('ui.quit.text')}${unsaved ? `\n${tr('ui.quit.unsaved', { n: unsaved })}` : ''}`);
+  const runs = schedules.filter((s) => s.last?.state === 'run').length; // 닫으면 main 이 claude -p 를 끈다
+  const ok = await confirmBox(tr('ui.quit.title'), `${tr('ui.quit.text')}${unsaved ? `\n${tr('ui.quit.unsaved', { n: unsaved })}` : ''}${runs ? `\n${tr('ui.quit.sched', { n: runs })}` : ''}`);
   if (!ok) return;
   flushSave();
   api.closeApp();
@@ -2580,7 +2586,9 @@ function openGroupMenu(key, name, list, anchor) {
   };
   imp.addEventListener('pointerenter', showSub);
   imp.addEventListener('click', showSub);
-  showMenu(key, [el('div', 'gm-label', tr('ui.menu.newLabel')), ...agentItems((c) => launch(list[0].data.cwd, groupSpot(list), c)), el('div', 'gm-sep'), imp, sub], anchor);
+  const sch = el('button', 'gm-item', tr('ui.sched.groupItem'));
+  sch.addEventListener('click', () => { closeGroupMenu(); openSched({ cwd: list[0].data.cwd, fromMenu: true }); });
+  showMenu(key, [el('div', 'gm-label', tr('ui.menu.newLabel')), ...agentItems((c) => launch(list[0].data.cwd, groupSpot(list), c)), el('div', 'gm-sep'), imp, sch, sub], anchor);
   projectSessions(key).then((mine) => {
     if (groupMenuFor !== key) return;
     if (!mine.length) return sub.replaceChildren(el('li', 'gm-none', tr('ui.menu.noHistory', { name })));
@@ -2876,7 +2884,9 @@ function openFileMenu(e, abs, isDir) {
   };
   const sep = () => el('div', 'gm-sep');
   const parts = [];
-  if (!isDir) parts.push(item(tr('ui.fm.open'), () => { fx.active = abs; renderFiles(); openViewer({ data: { cwd: root } }, abs, 0); }));
+  const pick = (asTab) => () => { fx.active = abs; renderFiles(); openViewer({ data: { cwd: root } }, abs, 0, asTab); };
+  // PDF·이미지는 보드 카드(기본) / 파일 탭 중 고른다
+  if (!isDir) parts.push(...(isCardFile(abs) ? [item(tr('ui.fm.openCard'), pick(false)), item(tr('ui.fm.openTab'), pick(true))] : [item(tr('ui.fm.open'), pick(false))]));
   const into = isDir ? abs : dirOf(abs);
   parts.push(item(tr('ui.fm.newFile'), () => newEntry(into, false)), item(tr('ui.fm.newFolder'), () => newEntry(into, true)));
   if (!isRoot) {
@@ -2892,6 +2902,10 @@ function openFileMenu(e, abs, isDir) {
     sessions.sort((a, b) => (b === focused) - (a === focused));
     for (const n of sessions.slice(0, 8)) parts.push(item(`${LABELS[n.data.command] ?? n.data.command} · ${n.data.name}`, () => insertPaths(n, [abs]), 'gm-sess-item'));
   }
+  showFileMenu(e, parts);
+}
+// 파일 메뉴·파일 탭 메뉴가 같이 쓰는 띄우기
+function showFileMenu(e, parts) {
   const menu = $('group-menu');
   menu.replaceChildren(...parts);
   menu.hidden = false;
@@ -2971,11 +2985,21 @@ async function renameEntry(abs) {
     if (r.error) { toast(tr('ui.fm.renameFail', { error: r.error }), true); return renderFiles(); }
     // 열린 탭·펼친 폴더·고른 파일도 새 경로를 따라간다
     const moved = (p) => (under(p, abs) ? r.path + p.slice(abs.length) : p);
-    for (const d of docs) d.abs = moved(d.abs);
+    for (const d of docs) {
+      const p = moved(d.abs);
+      if (p === d.abs) continue;
+      dropDocView(d.abs);
+      d.abs = p;
+      delete d.doc; // 옛 bimo-doc 주소는 옛 경로로 등록돼 있다
+      // 확장자가 바뀌어 종류(글자 ↔ PDF·이미지)가 달라지면 새 종류로 다시 읽는다
+      // 저장 안 한 글자 탭은 내용을 지키려고 글자 탭으로 둔다(닫았다 다시 열면 새 종류로)
+      if (isCardFile(p) !== !!d.view && !d.dirty) Object.assign(d, { view: isCardFile(p), cm: null, dirty: false });
+    }
+    const wasActive = docActive;
     if (docActive) { docActive = moved(docActive); $('doc-path').textContent = docActive; }
     fx.open = new Set([...fx.open].map(moved));
     if (fx.active) fx.active = moved(fx.active);
-    renderDocTabs();
+    if (wasActive && wasActive !== docActive) showDoc(docActive); else renderDocTabs();
     await reloadTree();
   });
 }
@@ -2988,6 +3012,7 @@ async function trashEntry(abs, isDir) {
   // 지운 파일·폴더 안의 파일 탭은 닫는다(저장 안 한 내용도 같이 사라짐)
   const gone = docs.filter((d) => under(d.abs, abs));
   for (const d of gone) docs.splice(docs.indexOf(d), 1);
+  dropDocView(abs);
   if (docActive && under(docActive, abs)) showDoc(docs[0]?.abs ?? null);
   else renderDocTabs();
   toast(tr('ui.fm.trashed', { name }));
@@ -3072,12 +3097,15 @@ const docs = []; // { abs, line }
 let docActive = null; // 지금 보는 파일 경로, null = 보드
 const isMd = (abs) => /\.(md|markdown)$/i.test(abs);
 const sameFile = (a, b) => (isMac ? a === b : a.toLowerCase() === b.toLowerCase());
+// 닫히거나 지워지거나 경로가 바뀐 보기 탭(PDF·이미지)의 img/iframe 을 비운다. p = 그 파일 또는 그 파일이 든 폴더.
+const dropDocView = (p) => { const b = $('doc-view'); if (b.dataset.abs && under(b.dataset.abs, p)) { b.replaceChildren(); delete b.dataset.abs; } };
 
-function openViewer(n, abs, line) {
-  if (isCardFile(abs)) return openCard(abs); // PDF·이미지는 글자 탭 대신 보드 위 카드로
+// asTab: PDF·이미지를 카드 대신 파일 탭에 보기 전용으로 (파일 메뉴에서 고른 경우만)
+function openViewer(n, abs, line, asTab = false) {
+  if (isCardFile(abs) && !asTab) return openCard(abs); // PDF·이미지는 글자 탭 대신 보드 위 카드로
   const d = docs.find((x) => sameFile(x.abs, abs));
   if (d) d.line = line;
-  else docs.push({ abs, line });
+  else docs.push({ abs, line, view: isCardFile(abs) });
   showDoc(abs);
 }
 function renderDocTabs() {
@@ -3097,10 +3125,118 @@ function renderDocTabs() {
     t.append(x);
     t.addEventListener('click', () => showDoc(d.abs));
     t.addEventListener('auxclick', (e) => { if (e.button === 1) closeDoc(d.abs); }); // 휠 버튼 클릭으로도 닫기
+    t.addEventListener('contextmenu', (e) => openTabMenu(e, d.abs));
     return t;
   }));
   bar.querySelector('.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
+// 파일 탭 오른쪽 클릭: 닫기 묶음 + 경로 복사·파일 서랍에서 보기·탐색기에서 보기. 닫기는 탭마다 closeDoc(고친 탭은 확인, 취소하면 남는다).
+function openTabMenu(e, abs) {
+  e.preventDefault();
+  e.stopPropagation();
+  closeGroupMenu();
+  const item = (label, fn) => {
+    const b = el('button', 'gm-item', label);
+    b.addEventListener('click', () => { closeFileMenu(); fn(); });
+    return b;
+  };
+  const closeEach = async (list) => { for (const d of list) await closeDoc(d.abs); };
+  const i = docs.findIndex((x) => sameFile(x.abs, abs));
+  showFileMenu(e, [
+    ...(isCardFile(abs) ? [item(tr('ui.fm.openCard'), () => openCard(abs)), el('div', 'gm-sep')] : []),
+    item(tr('ui.tab.close'), () => closeDoc(abs)),
+    item(tr('ui.tab.closeOthers'), () => closeEach(docs.filter((d) => !sameFile(d.abs, abs)))),
+    item(tr('ui.tab.closeRight'), () => closeEach(docs.slice(i + 1))),
+    item(tr('ui.tab.closeAll'), () => closeEach([...docs])),
+    el('div', 'gm-sep'),
+    item(tr('ui.fm.copyPath'), () => { api.copy(abs); toast(tr('ui.fm.copiedPath')); }),
+    item(tr('ui.tab.showInFiles'), () => showInFiles(abs)),
+    item(tr(isMac ? 'ui.fm.revealMac' : 'ui.fm.reveal'), () => api.fileOp('reveal', dirOf(abs), abs, null)),
+  ]);
+}
+// 파일 서랍에서 보기: 그 파일이 든 프로젝트 폴더(지금 서랍 폴더 → 사이드바 폴더 중 가장 깊은 것 → 파일의 폴더)를 열고 그 줄까지 펼쳐 고른다
+async function showInFiles(abs) {
+  const base = fx.root && under(abs, fx.root) ? fx.root
+    : folders.map((f) => f.path).filter((p) => p && under(abs, p)).sort((a, b) => b.length - a.length)[0] ?? dirOf(abs);
+  await openFiles(base);
+  if (!fx.root || !samePath(fx.root, base)) return;
+  $('files-search').value = '';
+  $('files-only-changed').checked = false;
+  let p = base;
+  for (const part of (relTo(base, abs) ?? '').split('/').slice(0, -1)) fx.open.add(p = joinPath(p, part));
+  const row = joinPath(p, basename(abs)); // 트리 줄과 같은 형식(구분자)으로 맞춰야 강조·스크롤이 된다
+  fx.active = row;
+  await renderFiles();
+  rowOf(row)?.scrollIntoView({ block: 'center' });
+}
+
+// --- 빠른 파일 열기 (Ctrl+P / ⌘P): 고른 세션 폴더 → 사이드바에서 고른 폴더 기준으로 파일 이름 찾기 ---
+// 터미널 포커스 중엔 가로채지 않는다(셸·CLI 의 Ctrl+P = 이전 명령). 파일 서랍 머리 버튼으로도 연다.
+const qo = { root: null, q: null, items: [], sel: 0, timer: 0, ticket: 0 };
+function openQuick(root = focused?.data.cwd || cwd) {
+  if (!root) return toast(tr('ui.qo.noRoot'), true);
+  closeFileMenu();
+  Object.assign(qo, { root, q: null, items: [] });
+  $('qo-input').value = '';
+  $('quick-open').hidden = false;
+  $('qo-input').focus();
+  renderQuick();
+}
+function closeQuick() {
+  clearTimeout(qo.timer);
+  qo.ticket++;
+  $('quick-open').hidden = true;
+}
+async function renderQuick() {
+  clearTimeout(qo.timer);
+  const q = $('qo-input').value.trim(), root = qo.root, ticket = ++qo.ticket;
+  let items;
+  if (q) {
+    const found = await api.searchFiles(root, q).catch(() => []); // 찾기가 실패해도 창은 그대로
+    items = (Array.isArray(found) ? found : []).slice(0, 50).map((r) => ({ abs: joinPath(root, r.replace(/\//g, sepOf(root))), name: r.split('/').pop(), sub: r.includes('/') ? r.slice(0, r.lastIndexOf('/')) : '' }));
+  } else items = docs.map((d) => ({ abs: d.abs, name: basename(d.abs), sub: relTo(root, d.abs)?.split('/').slice(0, -1).join('/') ?? dirOf(d.abs) }));
+  if (ticket !== qo.ticket || $('quick-open').hidden) return;
+  Object.assign(qo, { q, items });
+  $('qo-list').replaceChildren(...(items.length ? items.map((it, i) => {
+    const li = el('li', 'qo-item');
+    li.setAttribute('role', 'option');
+    li.title = it.abs;
+    const sub = el('span', 'qo-sub');
+    sub.append(el('bdi', null, it.sub)); // rtl(앞부분 생략) 안에서도 '.github/x' 의 글자 순서가 뒤집히지 않게
+    li.append(el('span', 'qo-name', it.name), sub);
+    li.addEventListener('pointerdown', (e) => e.preventDefault()); // 입력칸 포커스를 잃지 않게
+    li.addEventListener('click', () => pickQuick(i));
+    return li;
+  }) : [el('li', 'qo-none', tr(q ? 'ui.files.noMatch' : 'ui.qo.empty'))]));
+  selQuick(0);
+}
+function selQuick(i) {
+  qo.sel = i;
+  [...$('qo-list').querySelectorAll('.qo-item')].forEach((li, j) => li.setAttribute('aria-selected', j === i));
+  $('qo-list').querySelectorAll('.qo-item')[i]?.scrollIntoView({ block: 'nearest' });
+}
+async function pickQuick(i = qo.sel) {
+  if (qo.q !== $('qo-input').value.trim()) { await renderQuick(); i = 0; } // 입력 직후 Enter: 결과를 먼저 받는다
+  if (qo.q !== $('qo-input').value.trim()) return; // 그 사이 더 친 글자·Enter 연타: 낡은 결과를 열지 않는다
+  const it = qo.items[i];
+  if (!it || $('quick-open').hidden) return;
+  closeQuick();
+  openViewer({ data: { cwd: qo.root } }, it.abs, 0);
+}
+$('qo-input').addEventListener('input', () => { clearTimeout(qo.timer); qo.timer = setTimeout(renderQuick, 120); });
+$('qo-input').addEventListener('keydown', (e) => {
+  const n = qo.items.length;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (n) selQuick((qo.sel + (e.key === 'ArrowDown' ? 1 : n - 1)) % n); }
+  else if (e.key === 'Enter') { e.preventDefault(); pickQuick(); }
+  else if (e.key === 'Escape') { e.stopPropagation(); closeQuick(); }
+});
+addEventListener('pointerdown', (e) => { if (!$('quick-open').hidden && !e.target.closest('#quick-open, #files-quick')) closeQuick(); });
+addEventListener('keydown', (e) => {
+  if (!mod(e) || e.shiftKey || e.altKey || e.code !== 'KeyP' || e.target.closest?.('.xterm')) return;
+  e.preventDefault();
+  $('quick-open').hidden ? openQuick() : closeQuick();
+});
+$('files-quick').addEventListener('click', () => ($('quick-open').hidden ? openQuick(fx.root || undefined) : closeQuick()));
 async function showDoc(abs) {
   // 떠나는 탭의 오른쪽 해석 스크롤을 기억해 두었다가 돌아오면 그 자리로(편집기 쪽은 Doc 이 기억한다)
   const prev = docActive && docs.find((x) => sameFile(x.abs, docActive));
@@ -3115,6 +3251,8 @@ async function showDoc(abs) {
   $('docs').classList.toggle('split', md);
   $('doc-path').textContent = abs;
   $('doc-ext').hidden = true;
+  $('docs').classList.toggle('view', !!d.view);
+  if (d.view) return showDocView(d);
   // 고치지 않은 탭은 열 때마다 다시 읽어 AI 가 고친 내용이 바로 보이게. 고치던 탭은 그대로 둔다.
   if (!d.cm || !docDirty(d)) {
     const r = await api.readFile(abs);
@@ -3156,11 +3294,30 @@ async function showDoc(abs) {
   } else if (md) $('doc-md').scrollTop = d.mdTop || 0;
   editor.focus();
 }
+// PDF·이미지 탭: 카드와 같은 api.openDoc 주소를 img/iframe 으로. 읽기 전용이라 저장·고침 표시 없음.
+async function showDocView(d) {
+  const r = d.doc ?? await api.openDoc(d.abs).catch((err) => ({ error: err.message }));
+  if (!sameFile(docActive ?? '', d.abs)) return;
+  const box = $('doc-view');
+  if (r?.error || !r?.url) {
+    $('doc-ext').hidden = false;
+    delete box.dataset.abs;
+    return box.replaceChildren(el('p', 'doc-msg', r?.error || tr('ui.doc.openFail')));
+  }
+  d.doc = r;
+  if (box.dataset.abs === d.abs && box.firstElementChild?.src) return; // 같은 탭으로 돌아오면 PDF 페이지 자리를 그대로
+  const v = r.type === 'application/pdf' ? el('iframe') : el('img');
+  v.src = v.tagName === 'IFRAME' ? `${r.url}#navpanes=0` : r.url;
+  if (v.tagName === 'IMG') v.alt = basename(d.abs); else v.title = basename(d.abs);
+  box.dataset.abs = d.abs;
+  box.replaceChildren(v);
+}
 async function closeDoc(abs) {
   const i = docs.findIndex((x) => sameFile(x.abs, abs));
   if (i < 0) return;
   if (docs[i].dirty && !await confirmBox(tr('ui.doc.unsavedTitle'), tr('ui.doc.unsavedText', { name: basename(abs) }), tr('ui.close'))) return;
   docs.splice(i, 1);
+  dropDocView(abs);
   if (docActive && sameFile(docActive, abs)) showDoc(docs[Math.min(i, docs.length - 1)]?.abs ?? null);
   else renderDocTabs();
   if (!docs.length) nodes.forEach((n) => n.fit.fit());
@@ -3380,6 +3537,8 @@ ${tr('ui.peekHint')}`;
 }
 
 let collapsed;
+let sideQuery = '', sideDrag = null, sideOrder = []; // 사이드바 찾기어·끄는 섹션·지금 보이는 순서
+const GRIP_ICON = '<svg width="10" height="16" viewBox="0 0 10 16" aria-hidden="true"><g fill="currentColor"><circle cx="3" cy="3" r="1.5"/><circle cx="7" cy="3" r="1.5"/><circle cx="3" cy="8" r="1.5"/><circle cx="7" cy="8" r="1.5"/><circle cx="3" cy="13" r="1.5"/><circle cx="7" cy="13" r="1.5"/></g></svg>';
 try { collapsed = new Set(JSON.parse(pref.get('collapsed', '[]'))); } catch { collapsed = new Set(); }
 // 사이드바에 직접 추가한 폴더, 프로젝트 별칭 묶음(저장소 경로 소문자 -> 묶음 이름). 이 PC 설정으로만 남긴다.
 const readJson = (k, d) => { try { return JSON.parse(pref.get(k, JSON.stringify(d))); } catch { return d; } };
@@ -3525,7 +3684,7 @@ function worktreeButton(repo) {
 
 function projectGroup(key, name, rows, sessions, repo) {
   const proj = el('section', 'proj');
-  const open = !collapsed.has(key);
+  const open = !!sideQuery || !collapsed.has(key); // 찾는 중엔 접힌 것도 펼쳐 보인다(collapsed 는 그대로)
   const head = el('div', 'proj-head');
   const toggle = el('button', 'proj-name');
   toggle.setAttribute('aria-expanded', open);
@@ -3609,14 +3768,20 @@ function folderRow(f, label, badge, sessions, repo, branch, aliasable) {
   return row;
 }
 
+// 사이드바 순서: pref projOrder = 키 배열(저장소 aliasKey(경로), 별칭 묶음 `alias:{이름}`). 목록에 없는 항목은 폴더 목록 순서대로 뒤에 붙는다.
 function renderSidebar() {
   if ($('sidebar').hidden) return;
+  if (sideDrag) return; // 끄는 중엔 다시 그리지 않는다(끌기가 끝나면 늘 한 번 그린다)
+  sideQuery = $('side-search').value.trim().toLowerCase();
+  const hit = (...s) => s.some((x) => x && x.toLowerCase().includes(sideQuery));
+  const order = readJson('projOrder', []);
+  const rankOf = (k, i) => { const j = order.indexOf(k); return j < 0 ? order.length + i : j; };
   const all = [...nodes.values()];
   const claimed = new Set();
   const sessionsAt = (p) => all.filter((n) => n.data.cwd && samePath(n.data.cwd, p) && claimed.add(n));
-  const groups = [];
-  const byAlias = new Map(); // 묶음 이름 -> { sections, sessions }
-  for (const root of folders.filter((f) => !f.worktreeOf)) {
+  const tops = []; // { key, rank, section } 또는 별칭 묶음 { key, rank, name, members, sessions }
+  const byAlias = new Map(); // 묶음 이름 -> 묶음
+  for (const [i, root] of folders.filter((f) => !f.worktreeOf).entries()) {
     const members = [root, ...folders.filter((f) => f.worktreeOf && samePath(f.worktreeOf, root.path))];
     let section, sessions;
     // 워크트리가 없는 저장소는 그룹 헤더 없이 한 줄: 저장소 이름 + 브랜치 배지
@@ -3635,37 +3800,156 @@ function renderSidebar() {
       section = projectGroup(root.path, basename(root.path), rows, sessions, root.path);
     }
     const alias = aliases[aliasKey(root.path)];
-    if (!alias) { groups.push(section); continue; }
-    if (!byAlias.has(alias)) {
-      byAlias.set(alias, { sections: [], sessions: [] });
-      groups.push(alias); // 첫 프로젝트 자리에 묶음을 놓는다
+    // 찾기: 저장소 이름·경로·브랜치(워크트리 포함)·별칭 이름. 세션은 위에서 이미 이 저장소 몫으로 잡아 둔다(기타로 새지 않게).
+    if (sideQuery && !hit(alias, ...members.flatMap((f) => [basename(f.path), f.path, f.branch]))) continue;
+    const key = aliasKey(root.path);
+    section.dataset.key = key;
+    const item = { key, rank: rankOf(key, i), section, sessions };
+    if (!alias) { tops.push(item); continue; }
+    let g = byAlias.get(alias);
+    if (!g) {
+      byAlias.set(alias, g = { key: `alias:${alias}`, name: alias, members: [], sessions: [] });
+      tops.push(g);
     }
-    byAlias.get(alias).sections.push(section);
-    byAlias.get(alias).sessions.push(...sessions);
+    section.dataset.alias = alias;
+    g.members.push(item);
+    g.sessions.push(...sessions);
   }
-  // 묶음 자리 표시를 묶음 섹션으로 바꾼다
-  groups.forEach((g, i) => {
-    if (typeof g !== 'string') return;
-    const { sections, sessions } = byAlias.get(g);
-    const box = projectGroup(`\0alias:${g}`, g, sections, sessions);
+  // 묶음 자리: 저장해 둔 묶음 키 자리, 없으면 안의 프로젝트 중 가장 앞 자리
+  for (const g of byAlias.values()) g.rank = order.includes(g.key) ? order.indexOf(g.key) : Math.min(...g.members.map((m) => m.rank));
+  const byRank = (a, b) => a.rank - b.rank;
+  tops.sort(byRank);
+  tops.forEach((t) => t.members?.sort(byRank));
+  sideOrder = tops.flatMap((t) => [t.key, ...(t.members ?? []).map((m) => m.key)]);
+  const groups = tops.map((t) => {
+    if (!t.members) return t.section;
+    const g = t.name;
+    const box = projectGroup(`\0alias:${g}`, g, t.members.map((m) => m.section), t.sessions);
     box.classList.add('alias-group');
+    Object.assign(box.dataset, { key: t.key, alias: g });
     box.style.setProperty('--hue', aliasHue(g));
-    box.querySelector('.proj-label').append(el('span', 'alias-count', ` ${sections.length}`));
+    box.querySelector('.proj-label').append(el('span', 'alias-count', ` ${t.members.length}`));
     const dot = el('button', 'alias-dot');
     dot.title = tr('ui.alias.recolor', { name: g });
     dot.setAttribute('aria-label', dot.title);
     dot.addEventListener('click', (e) => { e.stopPropagation(); openAliasColor(g, dot); });
     box.querySelector('.proj-head').prepend(dot);
-    groups[i] = box;
+    return box;
   });
-  const rest = all.filter((n) => !claimed.has(n));
+  const rest = all.filter((n) => !claimed.has(n) && (!sideQuery || hit(basename(n.data.cwd), n.data.cwd)));
   if (rest.length) {
     const byPath = new Map();
     for (const n of rest) byPath.set(n.data.cwd, [...(byPath.get(n.data.cwd) ?? []), n]);
     const rows = [...byPath].map(([p, list]) => folderRow({ path: p }, basename(p), null, list));
     groups.push(projectGroup('\0other', tr('ui.side.other'), rows, rest));
   }
-  $('side-list').replaceChildren(...(groups.length ? groups : [el('p', 'side-empty', tr('ui.side.empty'))]));
+  $('side-list').replaceChildren(...(groups.length ? groups : [el('p', 'side-empty', tr(sideQuery ? 'ui.side.noMatch' : 'ui.side.empty'))]));
+  // 끌기 손잡이: 끌 수 있는 섹션(저장소 줄·그룹 머리·묶음 머리)에만. 찾는 중엔 끌기가 꺼져 있어 안 붙인다.
+  if (!sideQuery) $('side-list').querySelectorAll('[data-key]').forEach((s) => {
+    const g = el('span', 'side-grip');
+    g.innerHTML = GRIP_ICON;
+    g.title = tr('ui.side.grip');
+    g.setAttribute('aria-label', g.title);
+    g.addEventListener('click', (e) => e.stopPropagation()); // 손잡이 클릭은 선택·접기를 일으키지 않는다
+    (s.querySelector(':scope > .proj-head') ?? s.querySelector(':scope > .wt'))?.append(g);
+  });
+}
+$('side-search').addEventListener('input', renderSidebar);
+$('side-search').addEventListener('keydown', (e) => { if (e.key === 'Escape' && e.target.value) { e.target.value = ''; renderSidebar(); } });
+
+// 사이드바 끌기: 저장소 줄/그룹 머리·별칭 묶음 머리를 꾹 누르면(300ms, 5px 안) 끈다. 짧게 누르면 그대로 클릭.
+// 다른 항목 위/아래 = 순서 변경, 별칭 묶음 가운데 = 그 묶음으로 합치기, 묶음 안 저장소를 밖에 놓으면 묶음에서 빼기.
+// HTML5 draggable 이 아니라 포인터로 한다 — 파일 끌어 놓기(fileDrag)·세션 가져오기(importDrag)와 섞이지 않게.
+$('side-list').addEventListener('pointerdown', (e) => {
+  if (e.button !== 0 || sideQuery || e.target.closest('.icon-btn, .alias-dot')) return;
+  const sec = e.target.closest('[data-key]');
+  const grip = sec && (sec.querySelector(':scope > .proj-head') ?? sec.querySelector(':scope > .wt')); // 워크트리 줄은 끌지 않는다
+  if (!grip?.contains(e.target)) return;
+  // 손잡이(⋮⋮)는 기다리지 않고 3px 움직이면 바로 끈다 — 클릭만으로 끌기 상태가 켜졌다 꺼지지 않게
+  const handle = !!e.target.closest('.side-grip');
+  if (handle) e.preventDefault(); // 글자 선택·포커스 이동 없이
+  let last = e;
+  const stop = () => { clearTimeout(timer); removeEventListener('pointermove', move); removeEventListener('pointerup', stop); removeEventListener('pointercancel', stop); };
+  // 세션 상태가 바뀌면 사이드바가 그새 다시 그려질 수 있다 — 같은 키의 새 섹션으로 이어 간다
+  const go = (x, y) => {
+    stop();
+    const s = sec.isConnected ? sec : $('side-list').querySelector(`[data-key="${CSS.escape(sec.dataset.key)}"]`);
+    if (s && !sideQuery) startSideDrag(e, s, x, y);
+  };
+  const move = (ev) => {
+    last = ev;
+    const d = Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY);
+    if (handle ? d > 3 : d > 5) handle ? go(ev.clientX, ev.clientY) : stop();
+  };
+  const timer = handle ? 0 : setTimeout(() => go(last.clientX, last.clientY), 300);
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', stop);
+  addEventListener('pointercancel', stop);
+});
+// (x, y) 에 놓으면 어떻게 되나: { sec, where: before|after|into, alias } — alias 는 놓은 뒤의 별칭('' = 없음), 묶음을 끌 때는 undefined
+function sideDropAt(x, y, src) {
+  const t = document.elementFromPoint(x, y);
+  if (!t?.closest('#side-list')) return null;
+  const isGroup = src.classList.contains('alias-group');
+  let sec = t.closest('[data-key]');
+  if (sec && isGroup) sec = sec.closest('#side-list > [data-key]'); // 묶음은 최상위 자리끼리만
+  let where;
+  if (!sec) { // 항목 사이 틈: 커서보다 아래 있는 첫 최상위 항목 앞, 없으면 맨 끝 뒤
+    const list = [...$('side-list').querySelectorAll(':scope > [data-key]')].filter((s) => s !== src);
+    sec = list.find((s) => s.getBoundingClientRect().top > y);
+    where = sec ? 'before' : 'after';
+    sec ??= list.at(-1);
+  }
+  if (!sec || sec === src || src.contains(sec)) return null;
+  const r = sec.getBoundingClientRect();
+  const group = sec.classList.contains('alias-group');
+  if (!where && !isGroup && group) {
+    const edge = Math.min(r.height / 4, 8);
+    where = y < r.top + edge ? 'before' : y > r.bottom - edge ? 'after' : 'into';
+  }
+  where ??= y < r.top + r.height / 2 ? 'before' : 'after';
+  const alias = isGroup ? undefined : where === 'into' ? sec.dataset.alias : group ? '' : sec.dataset.alias ?? '';
+  return { sec, where, alias };
+}
+function startSideDrag(e, sec, x, y) {
+  getSelection()?.removeAllRanges();
+  const ghost = el('div', 'side-ghost', sec.dataset.alias && sec.classList.contains('alias-group') ? sec.dataset.alias : sec.querySelector('.proj-label, .wt-branch')?.firstChild?.textContent ?? '');
+  document.body.append(ghost);
+  sec.classList.add('drag-src');
+  document.body.classList.add('side-dragging');
+  sideDrag = sec;
+  let drop = null, cancel = false;
+  const mark = (mx, my) => {
+    $('side-list').querySelectorAll('.drop-before, .drop-after, .drop-into').forEach((s) => s.classList.remove('drop-before', 'drop-after', 'drop-into'));
+    Object.assign(ghost.style, { left: `${mx + 14}px`, top: `${my + 10}px` });
+    drop = cancel ? null : sideDropAt(mx, my, sec);
+    drop?.sec.classList.add(`drop-${drop.where}`);
+  };
+  const esc = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); cancel = true; mark(x, y); } };
+  const eatClick = (ev) => { ev.stopPropagation(); ev.preventDefault(); }; // 꾹 누른 뒤 놓을 때 오는 click(선택·접기)을 먹는다
+  addEventListener('keydown', esc, true);
+  addEventListener('click', eatClick, true);
+  mark(x, y);
+  drag(e, (dx, dy, ev) => { x = ev.clientX; y = ev.clientY; mark(x, y); }, (done) => {
+    removeEventListener('keydown', esc, true);
+    setTimeout(() => removeEventListener('click', eatClick, true), 0);
+    ghost.remove();
+    sec.classList.remove('drag-src');
+    document.body.classList.remove('side-dragging');
+    sideDrag = null;
+    if (done && drop) dropSide(sec.dataset.key, drop.sec.dataset.key, drop.where, drop.alias);
+    renderSidebar();
+  }, true);
+}
+// 끌기 끝: 순서를 projOrder 에 저장하고, 놓은 자리에 따라 별칭을 붙이거나 뗀다
+function dropSide(key, target, where, alias) {
+  const list = sideOrder.filter((k) => k !== key);
+  if (where !== 'into' && !list.includes(target)) return renderSidebar(); // 놓은 자리가 그새 없어졌다(목록 새로고침 등)
+  if (where === 'into') list.push(key); // 묶음 맨 뒤(묶음 안 순서는 같은 배열의 저장소 키 순서)
+  else list.splice(list.indexOf(target) + (where === 'after' ? 1 : 0), 0, key);
+  pref.set('projOrder', JSON.stringify(list));
+  if (alias !== undefined && alias !== (aliases[key] ?? '')) setAlias(key, alias);
+  else renderSidebar();
 }
 
 // 워크트리 추가 폼은 사이드바 아래에 고정 — 목록이 자주 다시 그려져도 입력이 날아가지 않게 목록 밖에 둔다.
@@ -4012,6 +4296,308 @@ $('side-refresh').addEventListener('click', (e) => withSpin(e.currentTarget, asy
 }));
 addEventListener('focus', () => { if (!$('sidebar').hidden) refreshFolders(); });
 
+// --- 예약: 정한 시간에 Claude 세션을 열고 프롬프트를 넣거나(세션 열기), 화면 없이 돌려 결과만 받는다(결과만 받기) ---
+// Patchbay 예약을 옮겨 왔다. board.json(boardData.schedules)에 두고 Bimo 가 켜져 있어야 돈다. 앱이 꺼져 있던(PC 잠자기 포함) 동안 지난 예약은 켤 때 물어본다.
+// { id, prompt, cwd, repeat: once|daily|weekdays|weekly|hours, start(ms, once·hours), time 'HH:MM', days [0-6], hours, out: session|result, perm: ask|read|edit, on, next, last }
+// 전부 허용(--dangerously-skip-permissions)은 무인 실행 위험 때문에 두지 않는다 (main 도 ask·read·edit 만 받는다).
+const SCHED_LATE = 2 * 60 * 1000; // 이만큼 넘게 늦으면 "놓친 예약"
+const WEEK = tr('ui.sched.week').split(',');
+const PERM_KEY = { ask: 'Ask', read: 'Read', edit: 'Edit' };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const pad2 = (v) => String(v).padStart(2, '0');
+const localIso = (t) => new Date(t - new Date(t).getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+const fmtDay = (d) => `${d.getMonth() + 1}/${d.getDate()}(${WEEK[d.getDay()]})`;
+const fmtWhen = (t) => { const d = new Date(t); return `${fmtDay(d)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`; };
+const schedTitle = (s) => firstLine(s.prompt).slice(0, 40) || tr('ui.sched.untitled');
+// 터미널 화면 끝 40줄 글자
+const tailLines = (n) => {
+  const b = n?.term.buffer.active, lines = [];
+  if (b) for (let i = Math.max(0, b.length - 40); i < b.length; i++) lines.push(b.getLine(i)?.translateToString(true) ?? '');
+  return lines;
+};
+const askingTrust = (lines) => lines.some((l) => /trust this folder|trust the files/i.test(l));
+
+const { nextRun } = window.SCHED_TIME; // lib/sched-time.js (node:test 로 검사)
+function repeatLabel(s) {
+  if (s.repeat === 'once') return tr('ui.sched.once');
+  if (s.repeat === 'hours') return tr('ui.sched.everyHours', { n: s.hours });
+  if (s.repeat === 'weekly') return tr('ui.sched.weeklyAt', { days: s.days.map((d) => WEEK[d]).join('·'), time: s.time });
+  return tr(s.repeat === 'daily' ? 'ui.sched.dailyAt' : 'ui.sched.weekdaysAt', { time: s.time });
+}
+
+// board.json 에서 읽은 예약 검사(손으로 고친 파일 대비). 못 쓰면 null, 고칠 수 있는 값은 기본값으로.
+function cleanSched(s) {
+  if (typeof s?.prompt !== 'string' || !s.id || !['once', 'daily', 'weekdays', 'weekly', 'hours'].includes(s.repeat)) return null;
+  if (['once', 'hours'].includes(s.repeat) && !Number.isFinite(s.start)) return null;
+  if (s.repeat === 'hours' && !(Number.isInteger(s.hours) && s.hours >= 1 && s.hours <= 168)) return null; // nextRun 0 나누기 방지
+  if (['daily', 'weekdays', 'weekly'].includes(s.repeat) && !/^\d\d:\d\d$/.test(s.time ?? '')) return null;
+  if (s.repeat === 'weekly' && !(Array.isArray(s.days) && s.days.length && s.days.every((d) => Number.isInteger(d) && d >= 0 && d <= 6))) return null;
+  if (typeof s.cwd !== 'string') s.cwd = '';
+  if (!['session', 'result'].includes(s.out)) s.out = 'session';
+  if (!Object.hasOwn(PERM_KEY, s.perm)) s.perm = 'ask';
+  if (s.last?.state === 'run') s.last = { ...s.last, state: 'fail', msg: tr('ui.sched.interrupted') }; // 도는 중에 앱이 꺼졌다
+  return s;
+}
+let schedMissed = []; // 다른 확인 창이 열려 있어 아직 못 물어본 놓친 예약
+function schedTick() {
+  const now = Date.now();
+  let changed = false;
+  for (const s of schedules) {
+    if (!s.on || s.next == null || s.next > now) continue;
+    // 아직 도는 중이면 겹쳐 돌리지 않고 다음 시각만 넘긴다
+    if (s.last?.state !== 'run') {
+      if (now - s.next > SCHED_LATE) { if (!schedMissed.includes(s)) schedMissed.push(s); } else runSched(s);
+    }
+    s.next = nextRun(s, now);
+    if (s.next == null) s.on = false;
+    changed = true;
+  }
+  if (changed) { save(); renderSched(); }
+  // confirmBox 는 하나뿐이라 열린 창(종료 확인·삭제 등)을 취소시키지 않게 닫힌 뒤 틱에 모아 묻는다
+  const missed = schedMissed.filter((s) => schedules.includes(s));
+  if (!missed.length || confirmDone) return;
+  schedMissed = [];
+  confirmBox(tr('ui.sched.missedTitle'), tr('ui.sched.missedText', { n: missed.length, list: missed.map((s) => `· ${schedTitle(s)}`).join('\n') }), tr('ui.sched.run'))
+    .then((ok) => ok && missed.forEach((s) => s.last?.state !== 'run' && runSched(s)));
+}
+
+async function runSched(s) {
+  const title = schedTitle(s);
+  const at = Date.now();
+  s.last = { at, state: 'run' };
+  renderSched();
+  if (s.out === 'result') {
+    toast(tr('ui.sched.resultRunning', { title }));
+    const r = await api.schedRun({ cwd: s.cwd, prompt: s.prompt, perm: s.perm, title }).catch((e) => ({ ok: false, error: e.message }));
+    s.last = { at, state: r?.ok ? 'ok' : 'fail', msg: r?.error ?? '', file: r?.file };
+    toast(r?.ok ? tr('ui.sched.resultDone', { title }) : tr('ui.sched.resultFail', { title, error: r?.error }), !r?.ok);
+  } else {
+    const [w, h] = NEW_SIZE;
+    const id = crypto.randomUUID();
+    await addNode({ id, command: 'claude', cwd: s.cwd, ...freeSpot(w, h), w, h, perm: s.perm, name: uniqueName(tr('ui.sched.sessName', { name: basename(s.cwd) })) }).catch(() => {});
+    const n = nodes.get(id);
+    // Claude 입력창(❯ 줄)이 뜰 때까지 기다렸다가 넣는다. 처음 띄울 땐 SessionStart 훅이 오지 않아 화면 글자로 본다.
+    // 폴더 신뢰 확인 창(❯ No, exit 등)에서 멈추면 넣지 않는다 — 넣으면 Enter 가 "아니오" 를 고른다.
+    const ready = () => { const lines = tailLines(n); return !askingTrust(lines) && lines.some((l) => /^\s*❯/.test(l)); };
+    const t0 = Date.now();
+    let ok = false;
+    while (n && !n.exited && Date.now() - t0 < 90 * 1000) {
+      if (n.state || ready()) { await sleep(1500); if (n.state || ready()) { ok = true; break; } }
+      await sleep(500);
+    }
+    if (ok && !n.exited) {
+      // 여러 줄이 중간에 실행되지 않게 붙여넣기(bracketed paste)로 넣고 Enter 는 따로 (main mcpRoute 와 같은 방식)
+      // ESC 를 빼야 프롬프트 안의 \x1b[201~ 등으로 붙여넣기를 빠져나가 키 입력이 되지 않는다
+      api.write(id, `\x1b[200~${s.prompt.replace(/\x1b/g, '').trim().replace(/\r?\n/g, '\r')}\x1b[201~`);
+      setTimeout(() => api.write(id, '\r'), 300);
+      s.last = { at, state: 'ok', msg: tr('ui.sched.ranIn', { name: n.data.name }) };
+    } else {
+      s.last = { at, state: 'fail', msg: tr(askingTrust(tailLines(n)) ? 'ui.sched.needTrust' : 'ui.sched.notReady') };
+      toast(tr('ui.sched.failToast', { title, msg: s.last.msg }), true);
+      if (n && !n.exited) focusNode(n);
+    }
+  }
+  save();
+  renderSched();
+}
+
+// 신뢰 확인용 세션: 그 폴더에서 Claude 를 한 번 열어 사용자가 직접 신뢰를 누르게 한다(대신 눌러 주지 않는다)
+async function trustSession(cwd) {
+  const [w, h] = NEW_SIZE;
+  const id = crypto.randomUUID();
+  await addNode({ id, command: 'claude', cwd, ...freeSpot(w, h), w, h }).catch(() => {});
+  const n = nodes.get(id);
+  if (n) focusNode(n);
+  toast(tr('ui.sched.trustToast'));
+}
+
+// 예약 창(index.html #sched-pop): 목록 ↔ 만들기·고치기. 폼은 하나를 다시 쓰고 열 때만 값을 채운다(돌던 예약이 목록을 다시 그려도 입력이 지워지지 않게).
+const schedPop = $('sched-pop');
+const sf = schedPop.querySelector('.sched-form');
+const sq = (name) => sf.elements[name];
+let schedForm = null; // 고치는 중인 예약(새것이면 { cwd }), null = 목록
+let schedDirs = []; // 폼 폴더 select 의 목록
+sf.querySelector('.sched-days').append(...WEEK.map((d, i) => {
+  const c = Object.assign(el('input'), { type: 'checkbox', name: 'day', value: String(i) });
+  const l = el('label');
+  l.append(c, el('span', null, d));
+  return l;
+}));
+const closeSched = () => { schedPop.hidden = true; schedForm = null; };
+function openSched(form = null) {
+  schedForm = form;
+  schedPop.hidden = false;
+  if (form) fillSchedForm(form);
+  renderSched();
+  (form ? sq('prompt') : schedPop.querySelector('.sched-add')).focus();
+}
+schedPop.querySelector('.sched-x').addEventListener('click', closeSched);
+schedPop.querySelector('.sched-add').addEventListener('click', () => openSched({ cwd: focused?.data.cwd ?? '' }));
+schedPop.addEventListener('pointerdown', (e) => { if (e.target === schedPop) closeSched(); });
+schedPop.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); schedForm && !schedForm.fromMenu ? openSched() : closeSched(); } });
+$('sched-btn').addEventListener('click', () => openSched());
+// [+ 새 세션 | ▾] 의 ▾ 메뉴. 항목을 누르면 닫고 그 항목 동작
+const setAddMenu = (open) => { $('add-menu').hidden = !open; $('add-more').setAttribute('aria-expanded', String(open)); };
+$('add-more').addEventListener('click', () => { setAddMenu($('add-menu').hidden); if (!$('add-menu').hidden) $('sched-btn').focus(); });
+$('add-menu').addEventListener('click', () => setAddMenu(false));
+$('add-menu').addEventListener('keydown', (e) => { if (e.key === 'Escape') { setAddMenu(false); $('add-more').focus(); } });
+addEventListener('pointerdown', (e) => { if (!$('add-menu').hidden && !e.target.closest('#add-menu, #add-more')) setAddMenu(false); });
+
+const SCHED_ICON = {
+  run: '<svg width="14" height="14" viewBox="0 0 16 16"><path d="M4.5 3v10l8.5-5z" fill="currentColor"/></svg>',
+  edit: '<svg width="14" height="14" viewBox="0 0 16 16"><path d="M10.5 2.5l3 3-8 8H2.5v-3z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>',
+  del: '<svg width="14" height="14" viewBox="0 0 16 16"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 9h5.6l.7-9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>',
+};
+function renderSched() {
+  if (schedPop.hidden) return;
+  const list = schedPop.querySelector('.sched-list');
+  schedPop.querySelector('.sched-add').hidden = !!schedForm;
+  schedPop.querySelector('.sched-box').classList.toggle('wide', !!schedForm);
+  list.hidden = !!schedForm;
+  sf.hidden = !schedForm;
+  if (schedForm) return;
+  if (!schedules.length) return list.replaceChildren(el('p', 'sched-none', tr('ui.sched.none')));
+  list.replaceChildren(...schedules.map((s) => {
+    const row = el('div', `sched-row${s.on ? '' : ' off'}`);
+    // 왼쪽: 다음 실행 날짜·시각(크게)과 남은 시간
+    const when = el('div', 'sched-when-box');
+    if (s.on && s.next) {
+      const d = new Date(s.next), left = s.next - Date.now();
+      const rel = left < 3600e3 ? tr('ui.sched.inMin', { n: Math.max(1, Math.round(left / 60e3)) }) : left < 86400e3 ? tr('ui.sched.inHour', { n: Math.round(left / 3600e3) }) : tr('ui.sched.inDay', { n: Math.round(left / 86400e3) });
+      when.append(el('span', 'sched-day', fmtDay(d)), el('span', 'sched-clock', `${pad2(d.getHours())}:${pad2(d.getMinutes())}`), el('span', 'sched-rel', rel));
+    } else when.append(el('span', 'sched-clock off', tr('ui.sched.off')));
+    // 가운데: 제목, 설정 태그, 지난 실행
+    const mid = el('div', 'sched-mid');
+    const title = el('div', 'sched-title', schedTitle(s));
+    title.title = s.prompt;
+    const tags = el('div', 'sched-tags');
+    const tag = (t) => tags.append(el('span', 'sched-tag', t));
+    tag(`📁 ${basename(s.cwd)}`);
+    tag(`↻ ${repeatLabel(s)}`);
+    tag(tr(s.out === 'result' ? 'ui.sched.tagResult' : 'ui.sched.tagSession'));
+    tag(tr(`ui.sched.perm${PERM_KEY[s.perm] ?? 'Ask'}`));
+    mid.append(title, tags);
+    if (s.last) {
+      const L = { run: tr('ui.sched.lastRun'), ok: tr('ui.sched.lastOk'), fail: tr('ui.sched.lastFail') };
+      const last = el('div', `sched-last ${s.last.state}`);
+      last.append(el('i', 'sched-dot'), el('span', '', `${fmtWhen(s.last.at)} ${L[s.last.state] ?? ''}${s.last.msg ? ` · ${s.last.msg}` : ''}`));
+      if (s.last.file) {
+        const file = s.last.file;
+        const open = el('button', 'sched-link', tr('ui.sched.openResult'));
+        open.addEventListener('click', () => { closeSched(); openViewer(null, file, 0); });
+        const where = el('button', 'sched-link', tr('ui.sched.reveal'));
+        where.title = file;
+        where.addEventListener('click', () => api.fileOp('reveal', dirOf(file), file, null).then((r) => r?.error && toast(r.error, true), (err) => toast(err.message, true)));
+        last.append(open, where);
+      }
+      mid.append(last);
+    }
+    // 오른쪽: 켜기 스위치, 아이콘 버튼
+    const side = el('div', 'sched-side-acts');
+    const sw = el('button', 'sched-switch');
+    sw.setAttribute('role', 'switch');
+    sw.setAttribute('aria-checked', String(!!s.on));
+    sw.title = tr(s.on ? 'ui.sched.turnOff' : 'ui.sched.turnOn');
+    sw.append(el('i'));
+    sw.addEventListener('click', () => {
+      s.on = !s.on;
+      if (s.on) s.next = nextRun(s, Date.now());
+      if (s.on && s.next == null) { s.on = false; toast(tr('ui.sched.pastCantOn'), true); }
+      save();
+      renderSched();
+    });
+    const icon = (svg, label, fn, cls = '') => {
+      const b = el('button', `sched-icon ${cls}`);
+      b.innerHTML = svg; // 고정 아이콘만
+      b.title = label;
+      b.setAttribute('aria-label', label);
+      b.addEventListener('click', fn);
+      return b;
+    };
+    const run = icon(SCHED_ICON.run, tr('ui.sched.runNow'), () => runSched(s));
+    run.disabled = s.last?.state === 'run';
+    const ed = icon(SCHED_ICON.edit, tr('ui.sched.edit'), () => openSched(s));
+    const del = icon(SCHED_ICON.del, tr('ui.sched.del'), async () => {
+      if (!(await confirmBox(tr('ui.sched.delTitle'), tr('ui.sched.delText', { title: schedTitle(s) }), tr('ui.sched.del')))) return;
+      schedules.splice(schedules.indexOf(s), 1);
+      save();
+      renderSched();
+    }, 'del');
+    side.append(sw, run, ed, del);
+    row.append(when, mid, side);
+    return row;
+  }));
+}
+
+function fillSchedForm(src) {
+  const soon = Math.ceil((Date.now() + 3600 * 1000) / 600000) * 600000;
+  const v = { repeat: 'once', start: soon, time: '09:00', days: [1], hours: 1, out: 'session', perm: 'ask', prompt: '', ...src };
+  schedDirs = orderedFolders();
+  if (!schedDirs.some((x) => samePath(x.path, v.cwd ?? ''))) schedDirs.unshift({ path: v.cwd ?? '', name: basename(v.cwd) });
+  sq('cwd').replaceChildren(...schedDirs.map((x, i) => Object.assign(el('option', null, x.name), { value: String(i) })));
+  sq('cwd').value = String(schedDirs.findIndex((x) => samePath(x.path, v.cwd ?? '')));
+  sq('prompt').value = v.prompt;
+  sq('repeat').value = v.repeat;
+  sq('start').value = localIso(Number.isFinite(v.start) ? v.start : soon);
+  sq('hours').value = v.hours;
+  sq('time').value = v.time;
+  sf.querySelectorAll('[name=day]').forEach((c) => { c.checked = v.days.includes(Number(c.value)); });
+  sf.querySelector(`[name=out][value=${v.out === 'result' ? 'result' : 'session'}]`).checked = true;
+  sq('perm').value = Object.hasOwn(PERM_KEY, v.perm) ? v.perm : 'ask';
+  sf.querySelector('.sched-err').textContent = '';
+  delete sf.dataset.trust;
+  syncSchedForm();
+}
+const schedDir = () => schedDirs[Number(sq('cwd').value)]?.path ?? '';
+function syncSchedForm() {
+  sf.querySelector('.sched-path').textContent = schedDir() || tr('ui.home');
+  sf.querySelectorAll('[data-for]').forEach((x) => { x.hidden = !x.dataset.for.split(' ').includes(sq('repeat').value); });
+  checkTrust();
+}
+// 세션 열기 + 아직 신뢰 안 한 폴더면 경고(결과만 받기는 신뢰 확인 없이 돈다)
+let trustAsk = 0;
+async function checkTrust() {
+  const box = sf.querySelector('.sched-trust'), dir = schedDir(), my = ++trustAsk;
+  if (sf.querySelector('[name=out]:checked')?.value !== 'session') return (box.hidden = true);
+  const t = await api.claudeTrusted(dir).catch(() => null);
+  if (my === trustAsk) box.hidden = t !== false;
+}
+sf.querySelector('.sched-trust-go').addEventListener('click', () => { sf.dataset.trust = '1'; sf.requestSubmit(); });
+sf.addEventListener('change', syncSchedForm);
+sf.querySelector('.sched-cancel').addEventListener('click', () => (schedForm?.fromMenu ? closeSched() : openSched()));
+sf.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const src = schedForm;
+  if (!src) return;
+  const err = (t) => { sf.querySelector('.sched-err').textContent = t; };
+  const s = {
+    cwd: schedDir(),
+    prompt: sq('prompt').value.trim(),
+    repeat: sq('repeat').value,
+    start: new Date(sq('start').value).getTime(),
+    time: sq('time').value,
+    days: [...sf.querySelectorAll('[name=day]:checked')].map((c) => Number(c.value)),
+    hours: Math.round(Number(sq('hours').value)),
+    out: sf.querySelector('[name=out]:checked').value,
+    perm: sq('perm').value,
+  };
+  const goTrust = sf.dataset.trust === '1';
+  delete sf.dataset.trust;
+  if (!s.prompt) return err(tr('ui.sched.errPrompt'));
+  if (['once', 'hours'].includes(s.repeat) && !Number.isFinite(s.start)) return err(tr('ui.sched.errStart'));
+  if (s.repeat === 'once' && s.start <= Date.now()) return err(tr('ui.sched.errPast'));
+  if (s.repeat === 'hours' && !(s.hours >= 1 && s.hours <= 168)) return err(tr('ui.sched.errHours'));
+  if (['daily', 'weekdays', 'weekly'].includes(s.repeat) && !/^\d\d:\d\d$/.test(s.time)) return err(tr('ui.sched.errTime'));
+  if (s.repeat === 'weekly' && !s.days.length) return err(tr('ui.sched.errDays'));
+  const target = schedules.includes(src) ? src : { id: crypto.randomUUID() };
+  Object.assign(target, s, { on: true, next: nextRun(s, Date.now()) });
+  if (!schedules.includes(target)) schedules.push(target);
+  save();
+  toast(tr('ui.sched.saved', { when: fmtWhen(target.next) }));
+  if (goTrust) { closeSched(); trustSession(s.cwd); } else openSched();
+});
+setInterval(schedTick, 20 * 1000);
+
 (async () => {
   document.body.classList.add(`os-${api.platform}`); // 제목 표시줄 버튼 자리(Windows 오른쪽, Mac 왼쪽)
   winBuild = (await api.sysInfo()).build;
@@ -4034,10 +4620,12 @@ addEventListener('focus', () => { if (!$('sidebar').hidden) refreshFolders(); })
       if (!Number.isFinite(d.x) || !Number.isFinite(d.y)) Object.assign(d, freeSpot(d.w, d.h));
       addCard(d);
     });
+    schedules = (Array.isArray(saved.schedules) ? saved.schedules : []).map(cleanSched).filter(Boolean);
     renderLinks();
   }
   applyView();
   save();
+  schedTick();
   if (smoke) {
     if (!nodes.has('smoke')) await addNode({ id: 'smoke', command: '', cwd: '', x: 40, y: 40, w: 660, h: 420 });
     setTimeout(() => api.write('smoke', `${smoke}\r`), 2000);

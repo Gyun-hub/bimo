@@ -50,4 +50,6 @@ contextBridge.exposeInMainWorld('api', {
   listPaths: (extra) => ipcRenderer.invoke('paths:list', extra),
   loadBoard: () => ipcRenderer.invoke('board:load'),
   saveBoard: (board) => ipcRenderer.send('board:save', board),
+  schedRun: (job) => ipcRenderer.invoke('sched:run', job),
+  claudeTrusted: (cwd) => ipcRenderer.invoke('claude:trusted', cwd),
 });

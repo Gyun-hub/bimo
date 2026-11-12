@@ -9,6 +9,7 @@ const board = require('./lib/board');
 const codex = require('./lib/codex');
 const doc = require('./lib/doc');
 const transcript = require('./lib/transcript');
+const sched = require('./lib/schedule');
 const { startWait } = require('./lib/waits');
 const { t } = require('./locales');
 
@@ -78,7 +79,8 @@ function mcpRoute(caller, route, body, res) {
   const wait = body.wait !== false && (target.command === 'claude' || target.command === 'codex');
   // 붙여넣기(bracketed paste)로 보내야 여러 줄이 중간에 실행되지 않는다. Enter 는 따로 보낸다.
   const p = ptys.get(target.id);
-  p.write(`\x1b[200~${codex.callPrefix(me.name)} ${String(body.message)}\x1b[201~`);
+  // 본문의 ESC 는 뺀다 — \x1b[201~ 로 붙여넣기를 일찍 끝내고 나머지를 키 입력으로 넣을 수 있다
+  p.write(`\x1b[200~${codex.callPrefix(me.name)} ${String(body.message).replace(/\x1b/g, '')}\x1b[201~`);
   // shortcut: codex 입력창은 붙여넣기 직후 Enter 를 줄바꿈으로 받을 수 있어 늦춘다. 600ms 는 실측 안 된 값 — 실제 Codex 로 재 보고 조정.
   setTimeout(() => ptys.get(target.id)?.write('\r'), target.command === 'codex' ? 600 : 120);
   send('call:start', { callId, from: caller, to: target.id, wait });
@@ -321,7 +323,7 @@ function createWindow() {
   win.on('close', (e) => {
     if (closeConfirmed || win.webContents.isCrashed?.()) return;
     e.preventDefault();
-    send('app:confirm-close', ptys.size);
+    send('app:confirm-close', ptys.size + schedKids.size); // 도는 예약(claude -p)도 같이 꺼진다
   });
 }
 let closeConfirmed = false;
@@ -359,7 +361,7 @@ function hasTranscript(sessionId) {
 
 // 에이전트도 PowerShell 안에서 실행한다 — npm .cmd 심(codex, gemini)이 그대로 돌고, 종료 후 셸이 남는다.
 // claude 는 세션 id 를 앱이 정해서 띄우고, 다음 실행 때 그 id 로 이어한다.
-ipcMain.handle('pty:spawn', (e, { id, command, cwd, cols, rows, sessionId }) => {
+ipcMain.handle('pty:spawn', (e, { id, command, cwd, cols, rows, sessionId, perm }) => {
   if (!/^[\w-]{1,80}$/.test(id)) return { error: tr('main.pty.badId') };
   const isCodex = command === 'codex', spawnAt = Date.now();
   const dir = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
@@ -370,7 +372,8 @@ ipcMain.handle('pty:spawn', (e, { id, command, cwd, cols, rows, sessionId }) => 
   if (command === 'claude') {
     const sid = /^[0-9a-f-]{36}$/i.test(sessionId || '') ? sessionId : null; // PowerShell 명령에 들어가므로 형식 검사
     const session = sid ? (hasTranscript(sid) ? `--resume ${sid}` : `--session-id ${sid}`) : '';
-    command = `claude ${session} --settings ${q(settings)} --mcp-config ${q(mcpConfig(id))}`;
+    // perm 은 예약 실행 때만 온다. 화이트리스트 키가 아니면 인자 없음
+    command = `claude ${session} --settings ${q(settings)} --mcp-config ${q(mcpConfig(id))} ${sched.permArgs(perm).join(' ')}`.trim();
   } else if (command === 'codex') {
     // 가져온 Codex 대화 이어 열기에도 같은 -c 를 붙인다 (-c 는 하위 명령 앞에 둔다)
     const cx = codexArgs(id, q);
@@ -432,6 +435,78 @@ async function refreshPath() {
   const parts = [...(process.env.Path || '').split(';'), ...expand(sys).split(';'), ...expand(user).split(';')].filter(Boolean);
   process.env.Path = [...new Set(parts)].join(';');
 }
+// --- 예약 (Patchbay 에서 옮김) ---
+// 일회용 Claude: 폴더에서 claude -p 로 한 번 묻고 끝낸다. 결과는 { text } 또는 { error }.
+// 프롬프트는 stdin 으로만 넣는다 — Windows 는 .cmd 심 때문에 shell 을 쓰므로 인자는 고정 배열(PERM_ARGS)뿐이어야 한다.
+const schedKids = new Set(); // 도는 claude -p. 창을 닫으면 같이 끈다
+// shell 을 거치면 child 는 cmd.exe 라 claude(node) 까지 같이 끈다
+const killKid = (child) => (isWin ? execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {}) : child.kill());
+const OUT_CAP = 1024 * 1024; // 결과가 끝없이 길어도 메모리를 다 쓰지 않게
+async function claudeOnce(cwd, prompt, args, minutes) {
+  await refreshPath();
+  return new Promise((resolve) => {
+    let child;
+    try {
+      // NoDefaultCurrentDirectoryInExePath: cmd 가 작업 폴더의 claude.cmd 를 PATH 보다 먼저 실행하지 않게
+      const env = { ...childEnv(), ...(isWin && { NoDefaultCurrentDirectoryInExePath: '1' }) };
+      child = require('child_process').spawn('claude', ['-p', ...args], { cwd, shell: isWin, windowsHide: true, env });
+    } catch (x) {
+      return resolve({ error: tr('main.sched.noClaude', { error: x.message }) });
+    }
+    schedKids.add(child);
+    let out = '', err = '', cut = false;
+    const take = (s, c) => { if (s.length >= OUT_CAP) { cut = true; return s; } return s + c; };
+    const timer = setTimeout(() => {
+      killKid(child);
+      resolve({ error: tr('main.sched.timeout', { min: minutes }) });
+    }, minutes * 60 * 1000);
+    child.stdout.on('data', (c) => (out = take(out, c)));
+    child.stderr.on('data', (c) => (err = take(err, c)));
+    child.stdin.on('error', () => {}); // 바로 죽으면 EPIPE — close 에서 처리한다
+    child.on('error', (x) => { schedKids.delete(child); clearTimeout(timer); resolve({ error: tr('main.sched.noClaude', { error: x.message }) }); });
+    child.on('close', (code) => {
+      schedKids.delete(child);
+      clearTimeout(timer);
+      const text = out.slice(0, OUT_CAP).trim();
+      resolve(code === 0 && text ? { text: cut ? `${text}\n\n${tr('main.sched.cut')}` : text } : { error: (err || out).trim().slice(0, 500) || tr('main.sched.exit', { code }) });
+    });
+    child.stdin.end(prompt);
+  });
+}
+// 결과만 받기: 화면 없이 돌리고 결과를 userData/schedules/ 에 md 로 남긴다 (임시 파일 → rename).
+ipcMain.handle('sched:run', async (e, job) => {
+  const { prompt, perm, title } = job || {};
+  const cwd = job?.cwd === '' ? os.homedir() : job?.cwd; // 빈 폴더 = 홈 (pty:spawn 과 같게)
+  if (typeof cwd !== 'string') return { ok: false, error: tr('main.sched.noDir', { cwd }), file: null };
+  // 네트워크(UNC) 경로는 stat 이 오래 멈출 수 있고, 무인 실행을 공유 폴더에서 돌리지 않는다
+  if (/^[\\/]{2}/.test(cwd)) return { ok: false, error: tr('main.sched.unc', { cwd }), file: null };
+  try {
+    if (!fs.statSync(cwd).isDirectory()) return { ok: false, error: tr('main.sched.noDir', { cwd }), file: null };
+  } catch {
+    return { ok: false, error: tr('main.sched.noDir', { cwd }), file: null };
+  }
+  const r = await claudeOnce(cwd, String(prompt || ''), sched.permArgs(perm), 60);
+  const now = new Date(), name = String(title || '').trim() || tr('main.sched.untitled');
+  const text = `# ${name} (${sched.stamp(now)})\n\n${tr('main.sched.mdFolder')}: ${cwd}\n\n## ${tr('main.sched.mdPrompt')}\n\n${prompt}\n\n## ${tr('main.sched.mdResult')}\n\n${r.text ?? tr('main.sched.mdFailed', { error: r.error })}\n`;
+  let file = null;
+  try {
+    file = await sched.saveUnique(path.join(app.getPath('userData'), 'schedules'), sched.schedFileName(title, now, tr('main.sched.untitled'), cwd), text);
+  } catch (err) {
+    r.error = `${r.error ? `${r.error} / ` : ''}${tr('main.sched.writeFailed', { error: err.message })}`;
+  }
+  return { ok: !!r.text && !!file, error: r.error, file };
+});
+// Claude 가 이 폴더(또는 상위 폴더)를 신뢰했는지: ~/.claude.json 의 projects[경로].hasTrustDialogAccepted. 읽지 못하면 null. 읽기만 한다.
+let trustCache = null; // { mtimeMs, projects } — 수 MB 일 수 있어 바뀌었을 때만 다시 읽는다
+ipcMain.handle('claude:trusted', async (e, cwd) => {
+  try {
+    const file = path.join(os.homedir(), '.claude.json'), { mtimeMs } = await fs.promises.stat(file);
+    if (trustCache?.mtimeMs !== mtimeMs) trustCache = { mtimeMs, projects: JSON.parse(await fs.promises.readFile(file, 'utf8')).projects };
+    return sched.trustedIn(trustCache.projects, typeof cwd === 'string' && cwd ? cwd : os.homedir(), isWin);
+  } catch {
+    return null;
+  }
+});
 // --- AI 별 남은 사용량 (헤더 AI 버튼 호버 박스) ---
 // Claude: Claude Code 로그인 토큰으로 api.anthropic.com/api/oauth/usage (비공개 API라 바뀔 수 있다).
 //   토큰이 만료돼도 앱이 갱신하지 않는다 — 자격 증명 파일을 덮어쓰다 claude 로그인을 망가뜨릴 수 있어서.
@@ -792,20 +867,20 @@ async function searchList(dir) {
     const ign = await gitLines(dir, ['ls-files', '-z', '--others', '--ignored', '--exclude-standard']) ?? [];
     files.push(...ign.filter((f) => !f.split('/').some((p) => HEAVY_DIRS.has(p))));
   }
-  if (!files) { // git 이 아니면 얕게 훑는다
+  if (!files) { // git 이 아니면 얕게 훑는다 — 홈 폴더처럼 큰 곳에서 메인을 막지 않게 비동기로
     files = [];
-    const walk = (d, rel, depth) => {
+    const walk = async (d, rel, depth) => {
       if (depth > 6 || files.length > 20000) return;
       let ents = [];
-      try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+      try { ents = await fs.promises.readdir(d, { withFileTypes: true }); } catch { return; }
       for (const x of ents) {
         if (x.name === '.git' || x.name === 'node_modules') continue;
         const r = rel ? `${rel}/${x.name}` : x.name;
-        if (x.isDirectory()) walk(path.join(d, x.name), r, depth + 1);
+        if (x.isDirectory()) await walk(path.join(d, x.name), r, depth + 1);
         else files.push(r);
       }
     };
-    walk(dir, '', 0);
+    await walk(dir, '', 0);
   }
   return files;
 }
@@ -1031,6 +1106,7 @@ ipcMain.on('update:install', () => {
 ipcMain.on('update:open', (e, url) => { if (/^https?:\/\//.test(url)) require('electron').shell.openExternal(url); });
 app.on('window-all-closed', () => {
   for (const p of ptys.values()) p.kill();
+  for (const c of schedKids) killKid(c);
   // ConPTY 정리 핸들이 이벤트 루프를 붙잡아 app.quit() 이 끝나지 않는다.
   // 번들 ConPTY 는 정리 중에 곧바로 프로세스를 끝내면 가끔 강제 종료(0xc0000409)된다 → 잠깐 정리할 시간을 준다.
   setTimeout(() => app.exit(0), 300);
