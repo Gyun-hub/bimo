@@ -2320,6 +2320,13 @@ api.appVersion().then((v) => {
 // 업데이트 뒤 처음 켜면 바뀐 점 목록. "닫기" 는 다음에 켤 때 또 뜨고, "다시 보지 않기" 는 이 버전에서 다시 안 뜬다.
 // 버전을 올릴 때 맨 위에 한 덩어리 추가한다.
 const CHANGES = [
+  { v: '1.2.6', items: [
+    { ko: 'Claude 예약이 생겼습니다. 상단 [+ 새 세션] 옆 ▾ 메뉴나 프로젝트 [+] 메뉴의 "예약…" 에서 한 번·매일·평일·요일·N시간마다로 정합니다. 세션을 열어 프롬프트를 넣거나, 결과만 md 파일로 받을 수 있습니다. 앱이 꺼져 있어 놓친 예약은 켤 때 물어봅니다.', en: 'New: scheduled Claude runs. Use "Schedule…" in the ▾ menu next to [+ New session] or in a project\'s [+] menu, and pick once, daily, weekdays, chosen days, or every N hours. Open a session with your prompt, or just get the result as an md file. Runs missed while the app was closed are offered when you start it.' },
+    { ko: 'PDF·이미지를 파일 서랍에서 오른쪽 클릭해 "보드 위 카드" 나 "새 탭" 으로 골라 엽니다.', en: 'Right-click a PDF or image in the file drawer to open it as a card on the board or in a new tab.' },
+    { ko: 'Ctrl+P(⌘P) 로 파일을 빠르게 엽니다. 파일 탭을 오른쪽 클릭하면 다른 탭 닫기, 파일 서랍에서 보기 등이 있습니다.', en: 'Press Ctrl+P (⌘P) to quickly open a file. Right-click a file tab for Close others, Show in file drawer, and more.' },
+    { ko: '사이드바에서 프로젝트·브랜치·별칭을 찾을 수 있습니다. 손잡이를 잡아 끌어 순서를 바꾸거나 별칭 묶음에 넣습니다.', en: 'Search the sidebar by project, branch, or alias. Drag the handle to reorder or drop into an alias group.' },
+    { ko: 'git 이 아닌 큰 폴더(홈 폴더 등)에서 파일을 찾아도 앱이 멈추지 않습니다.', en: 'Searching files in a large non-git folder (like your home folder) no longer freezes the app.' },
+  ] },
   { v: '1.2.5', items: [
     { ko: '새 캐릭터 넷이 생겼습니다: 고양이, 꼬마 로봇, 선인장 화분, 금붕어.', en: 'Four new characters: a cat, a little robot, a potted cactus, and a goldfish.' },
     { ko: '세션 머리의 캐릭터 버튼으로 세션마다 캐릭터를 바꿉니다. 새 캐릭터는 위에서 철푸덕 떨어집니다.', en: 'Use the character button on a session header to pick a character per session. New characters drop in from above with a plop.' },
