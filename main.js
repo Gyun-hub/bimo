@@ -9,6 +9,7 @@ const board = require('./lib/board');
 const codex = require('./lib/codex');
 const doc = require('./lib/doc');
 const transcript = require('./lib/transcript');
+const sessions = require('./lib/sessions');
 const sched = require('./lib/schedule');
 const { startWait } = require('./lib/waits');
 const { t } = require('./locales');
@@ -697,71 +698,7 @@ ipcMain.handle('paths:list', async (e, extra = []) => {
   return all;
 });
 
-// --- 세션 가져오기: 다른 곳에서 만든 AI 대화를 보드에서 이어 열기 ---
-// Claude: ~/.claude/projects/*/<id>.jsonl / Codex: ~/.codex/sessions/**/rollout-*.jsonl (session_meta 에 id·cwd)
-// Cursor: ~/.cursor/chats/<폴더 해시>/<id>/meta.json. 셋 다 공식 형식 문서가 없어 못 읽는 항목은 건너뛴다.
-const SESSION_LIMIT = 150; // AI 별 최근 것만
-function headLines(file, bytes = 256 * 1024) {
-  const fd = fs.openSync(file, 'r');
-  try {
-    const buf = Buffer.alloc(Math.min(bytes, fs.fstatSync(fd).size));
-    fs.readSync(fd, buf, 0, buf.length, 0);
-    return buf.toString('utf8').split('\n').slice(0, -1); // 마지막 줄은 잘렸을 수 있다
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-const parse = (line) => { try { return JSON.parse(line); } catch { return null; } };
-// 명령·시스템이 끼워 넣은 메시지(<command-name> 등)는 제목으로 쓰지 않는다
-const realPrompt = (t) => typeof t === 'string' && t.trim() && !t.trimStart().startsWith('<') ? t.trim().replace(/\s+/g, ' ').slice(0, 120) : null;
-function newestFiles(root, match, depth) {
-  const out = [];
-  const walk = (dir, d) => {
-    let ents = [];
-    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const ent of ents) {
-      const p = path.join(dir, ent.name);
-      if (ent.isDirectory() && d > 0) walk(p, d - 1);
-      else if (ent.isFile() && match(ent.name)) {
-        try { out.push({ p, at: fs.statSync(p).mtimeMs }); } catch {}
-      }
-    }
-  };
-  walk(root, depth);
-  return out.sort((a, b) => b.at - a.at).slice(0, SESSION_LIMIT);
-}
-
-function claudeSessions() {
-  return newestFiles(claudeProjects, (n) => /^[0-9a-f-]{36}\.jsonl$/i.test(n), 1).map(({ p, at }) => {
-    let cwd = '', title = null;
-    for (const j of headLines(p).map(parse)) {
-      if (!j) continue;
-      cwd ||= j.cwd || '';
-      if (!title && j.type === 'user' && !j.isMeta) {
-        const c = j.message?.content;
-        title = realPrompt(typeof c === 'string' ? c : Array.isArray(c) ? c.find((x) => x.type === 'text')?.text : null);
-      }
-      if (cwd && title) break;
-    }
-    return { agent: 'claude', id: path.basename(p, '.jsonl'), cwd, title, at };
-  }).filter((s) => s.title); // 대화가 없는(바로 닫은) 세션은 뺀다
-}
-
-function codexSessions() {
-  return newestFiles(path.join(os.homedir(), '.codex', 'sessions'), (n) => /^rollout-.*\.jsonl$/.test(n), 3).map(({ p, at }) => {
-    let id = null, cwd = '', title = null;
-    for (const j of headLines(p).map(parse)) {
-      if (!j) continue;
-      const pl = j.payload ?? j;
-      if (j.type === 'session_meta' || (!id && pl.id && pl.timestamp)) { id ??= pl.id; cwd ||= pl.cwd || ''; }
-      if (!title && pl.type === 'user_message') title = realPrompt(pl.message);
-      if (!title && pl.type === 'message' && pl.role === 'user') title = realPrompt(pl.content?.find?.((x) => x.type === 'input_text')?.text);
-      if (id && title) break;
-    }
-    id ??= path.basename(p).match(/[0-9a-f]{8}-[0-9a-f-]{27}/i)?.[0];
-    return id && { agent: 'codex', id, cwd, title: title || '(첫 메시지 없음)', at };
-  }).filter(Boolean);
-}
+// --- 세션 가져오기: 다른 곳에서 만든 AI 대화를 보드에서 이어 열기 (읽기·파싱은 lib/sessions.js, 전부 비동기) ---
 
 // --- Codex 세션 id 기억: 앱을 껐다 켜도 codex resume <id> 로 이어 열게 화면에 알린다 ---
 // claude 는 앱이 id 를 정하지만 codex 는 스스로 정한다. 턴 끝 notify 의 thread-id 를 쓰고, 없으면 rollout 에서 찾는다.
@@ -802,20 +739,11 @@ async function codexRolloutId({ at, cwd }, taken) {
   return codex.pickRollout(cands.filter(Boolean), { cwd, since: at, taken });
 }
 
-// Cursor CLI 대화: chats/<폴더 해시>/<대화 id>/meta.json 에 title·cwd·updatedAtMs (2026-10 맥 실측).
-// projects/*/agent-transcripts 는 Cursor 에디터 대화라 cursor-agent 로 이어 열 수 없어 넣지 않는다.
-function cursorSessions() {
-  return newestFiles(path.join(os.homedir(), '.cursor', 'chats'), (n) => n === 'meta.json', 2).map(({ p, at }) => {
-    const m = parse(fs.readFileSync(p, 'utf8'));
-    if (!m || m.hasConversation === false) return null;
-    return { agent: 'cursor-agent', id: path.basename(path.dirname(p)), cwd: m.cwd || '', title: realPrompt(m.title) || '(제목 없음)', at: m.updatedAtMs || at };
-  }).filter(Boolean);
-}
-
-ipcMain.handle('sessions:list', () => {
-  const safe = (f) => { try { return f(); } catch { return []; } };
-  return [...safe(claudeSessions), ...safe(codexSessions), ...safe(cursorSessions)];
-});
+ipcMain.handle('sessions:list', () => sessions.listSessions({
+  claude: claudeProjects,
+  codex: path.join(os.homedir(), '.codex', 'sessions'),
+  cursor: path.join(os.homedir(), '.cursor', 'chats'),
+}));
 
 // --- 파일 서랍: 폴더 트리(펼칠 때만 읽기), git 상태, 이름 찾기, 읽기 전용 미리보기 ---
 const HEAVY_DIRS = new Set(['node_modules', 'build', 'dist', 'out', 'target', 'bin', 'obj', '.gradle', '.idea', '.next', '.venv', 'venv', '__pycache__', 'coverage']);
