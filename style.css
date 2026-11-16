@@ -316,8 +316,8 @@ body.ctrl:not(.hand) #viewport .node:not(.doc-card), body.ctrl:not(.hand) #viewp
 /* 같은 프로젝트 세션 묶음 */
 #groups { position: absolute; left: 0; top: 0; }
 .group-frame { position: absolute; border: 2px solid hsl(var(--hue) 55% 62% / .55); border-radius: 22px; background: hsl(var(--hue) 55% 55% / .06); }
-/* 이름표·모두 닫기는 세션 위(맨 위 세션 캐릭터에 가려지지 않게), 멀리 보기 덮개(#covers) 아래 */
-.group-tag, .group-close { z-index: 2147482999; }
+/* 이름표·모두 닫기 z-index 는 renderer.js raiseGroup 이 정한다: 자기 프로젝트 세션(캐릭터) 위, 더 앞 프로젝트 세션 아래, 멀리 보기 덮개(#covers) 아래.
+   틀(.group-frame)에 z-index 를 주지 않는다 — 쌓임 맥락이 생기면 이름표가 세션과 겨루지 못한다. */
 .group-tag { position: absolute; left: 16px; top: 6px; display: flex; align-items: center; gap: 6px; }
 .group-add { width: 28px; height: 28px; border: 0; border-radius: 50%; background: hsl(var(--hue) 60% 50% / .3); color: hsl(var(--hue) 100% 94%); font-size: 18px; font-weight: 600; line-height: 1; cursor: pointer; box-shadow: 0 0 0 1px hsl(var(--hue) 60% 65% / .5); }
 .group-add:hover { background: hsl(var(--hue) 60% 50% / .55); }

@@ -1076,7 +1076,8 @@ async function checkUpdate(manual) {
       return v && newer(v, app.getVersion()) ? { status: 'downloading', version: v } : { status: 'latest', version: app.getVersion() };
     }
     // GitHub 는 /latest/download 가 실제 파일로 넘겨 주므로(redirect) 따라가는 net.fetch 로 받는다
-    const res = await require('electron').net.fetch(feed.yml, { signal: AbortSignal.timeout(8000) });
+    // no-store: 배포처가 캐시 헤더를 안 주면 Chromium 이 예전 yml 을 한동안 재사용해 새 버전을 못 본다
+    const res = await require('electron').net.fetch(feed.yml, { signal: AbortSignal.timeout(8000), cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const yml = await res.text();
     const v = yml.match(/^version:\s*(.+)$/m)?.[1].trim().replace(/^['"]|['"]$/g, '');

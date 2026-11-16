@@ -396,8 +396,21 @@ function place(n) {
 }
 
 let focused = null;
+// 겹친 프로젝트: 세션(또는 이름표)을 누르면 그 프로젝트 세션 전체를 맨 위로, 이름표·모두 닫기는 그 바로 위로.
+// 자기 세션 캐릭터에는 안 가리고, 더 앞에 올라온 프로젝트 세션에는 가려진다(엉뚱한 프로젝트를 닫지 않게).
+const groupZ = new Map(); // 프로젝트 key -> 이름표·모두 닫기 z-index
+const tagsOf = new Map(); // 프로젝트 key -> [이름표, 모두 닫기] (renderGroups 가 채움)
+function raiseGroup(key, top) {
+  // 프로젝트 안 쌓임 순서는 지금 순서 그대로 올린다(nodes 순서로 다시 매기면 1·2·3 이 섞인다)
+  const zOf = (m) => Number(m.el.style.zIndex) || 0;
+  const mine = [...nodes.values()].filter((m) => m !== top && projectOf(m).key === key).sort((a, b) => zOf(a) - zOf(b));
+  for (const m of mine) m.el.style.zIndex = ++topZ;
+  if (top) top.el.style.zIndex = ++topZ;
+  groupZ.set(key, ++topZ);
+  for (const t of tagsOf.get(key) ?? []) t.style.zIndex = topZ;
+}
 function setFocused(n) {
-  n.el.style.zIndex = ++topZ;
+  raiseGroup(projectOf(n).key, n);
   // 나를 기다리던 세션을 열어 보면 확인한 것으로 친다
   if (n.state === 'waiting') setState(n, n.waitKind === 'permission' ? 'working' : 'idle');
   // 트리 맞추기는 여기서 하지 않는다 — insertPaths 등이 부르면 사이드바에서 펴 둔 다른 프로젝트 트리가 바뀐다.
@@ -1215,6 +1228,15 @@ async function addNode(data) {
   // 그 사이 공백은 같은 큐 뒤로 미뤄야 "안녕 " 순서가 된다. 그 밖에는 즉시 보내 다른 키와 순서가 섞이지 않게 한다.
   let imeEnd = false;
   term.textarea?.addEventListener('compositionend', () => { imeEnd = true; setTimeout(() => { imeEnd = false; }, 0); });
+  // xterm 은 Enter·붙여넣기·blur 때만 숨은 입력칸(textarea)을 비워 Shift+Enter 로 여러 줄 쓰면 글이 계속 쌓인다.
+  // 한글 IME 가 조합 이벤트 없이 글자를 바꾸면(화면 캡처·한/영 전환 뒤) xterm 이 이전 값과 비교에 실패해 쌓인 글 전체를 다시 보낸다.
+  // → 조합 중이 아닐 때 키를 뗄 때마다 비워 둔다. xterm 이 보내기를 끝낸 뒤(setTimeout 0)에 비운다 — 위 imeEnd 공백보다도 뒤라 "안녕 " 순서는 그대로다.
+  const ta = term.textarea;
+  let composing = false;
+  ta.addEventListener('compositionstart', () => { composing = true; });
+  ta.addEventListener('compositionend', () => { composing = false; });
+  ta.addEventListener('blur', () => { composing = false; });
+  ta.addEventListener('keyup', () => setTimeout(() => { if (!composing) ta.value = ''; }, 0));
   term.attachCustomKeyEventHandler((e) => {
     // Space: 공백은 누르는 즉시 보내고, 꾹 누르면(반복 keydown) 이동 모드. 실제로 끌기 시작하면 그 공백을 지운다(viewport pointerdown). 한글 조합 중(229)은 건드리지 않는다.
     if (e.code === 'Space' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
@@ -1266,9 +1288,12 @@ async function addNode(data) {
   });
   // mouseup 을 놓쳐도(드래그 중 Alt+Tab 등) 복사되게 선택이 멈추면 한 번 더 복사한다. 드래그 중에는 기다린다.
   term.onSelectionChange(() => {
+    // 손을 뗀 바로 그 순간(xterm 이 선택을 확정하는 mouseup 안)에 복사한다. Claude 는 뗀 뒤 10~20ms 안에 다시 그리며 선택을 풀기도 한다.
+    if (n.justUp && term.hasSelection()) { n.justUp = false; copySelection(n, true); }
     clearTimeout(n.selTimer);
     if (!term.hasSelection()) return void (n.copied = ''); // 지웠다가 같은 글자를 다시 고르면 다시 복사
-    n.selTimer = setTimeout(() => mouseTerm !== n && copySelection(n), 120);
+    // 끄는 중에도 멈추면 알림 없이 미리 복사해 둔다(mouseup 을 못 받아도 마지막 선택이 남게)
+    n.selTimer = setTimeout(() => copySelection(n, false, mouseTerm === n), mouseTerm === n ? 250 : 120);
   });
   term.onData((d) => {
     api.write(data.id, d);
@@ -1307,6 +1332,8 @@ async function addNode(data) {
 // 터미널 마우스 이벤트의 좌표를 배율로 되돌려 넘긴다. 드래그가 터미널 밖으로 나가도 이어지게 캡처 단계에서 처리한다.
 const nodeOfEl = new WeakMap(); // .node 요소 -> 노드
 let mouseTerm = null; // 마우스 버튼을 누른 터미널
+let mouseBtn = 0; // 그 끌기를 시작한 버튼(e.button)
+const BTN_BIT = [1, 4, 2]; // e.button -> e.buttons 비트 (왼·가운데·오른)
 function unscale(e, n) {
   if (view.scale === 1) return;
   const r = n.el.querySelector('.xterm-screen')?.getBoundingClientRect();
@@ -1316,10 +1343,15 @@ function unscale(e, n) {
 }
 for (const type of ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick', 'contextmenu']) {
   addEventListener(type, (e) => {
+    if (e.bimoSynthetic) return; // Bimo 가 만든 이벤트(아래 뗀 자리 이동은 이미 좌표를 되돌렸다, releaseMouse 의 mouseup 은 xterm 몫)
     if (type === 'mousedown') mouseTerm = null; // 놓친 mouseup 이 남긴 값이 새 클릭을 엉뚱한 터미널로 보내지 않게
+    // 끌기를 시작한 버튼을 뗀 채 움직이는데 아직 끄는 중이면 창 밖에서 뗀 것이다. 여기서 끝내고 복사한다
+    if (type === 'mousemove' && mouseTerm && !(e.buttons & (BTN_BIT[mouseBtn] ?? 1))) releaseMouse();
     const n = mouseTerm ?? nodeOfEl.get(e.target.closest?.('.xterm')?.closest('.node'));
     if (!n) return;
-    if (type === 'mousedown') mouseTerm = n;
+    // Windows 오른쪽 클릭은 Bimo 가 붙여넣는다(contextmenu). 마우스 모드 앱(Claude 등)에도 넘기면 앱도 붙여 두 번 들어간다 → 앱에 안 넘긴다
+    if (!isMac && e.button === 2 && (type === 'mousedown' || type === 'mouseup') && n.term.modes.mouseTrackingMode !== 'none') return e.stopPropagation();
+    if (type === 'mousedown') { mouseTerm = n; mouseBtn = e.button; }
     unscale(e, n);
     // 앱이 마우스 모드를 켜면(claude 전체 화면 등) xterm 은 Shift 드래그만 선택으로 받는다 → 그냥 드래그도 선택이 되게 Shift 로 바꿔 준다.
     // Alt+드래그는 그대로 앱에 넘긴다. 휠은 손대지 않아 앱 스크롤이 된다.
@@ -1329,8 +1361,16 @@ for (const type of ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick', 'c
       Object.defineProperty(e, isMac ? 'altKey' : 'shiftKey', { value: true });
     }
     if (type === 'mouseup') {
+      // xterm 은 마지막 mousemove 자리까지만 고른다. 휙 끌고 바로 떼면 이동이 안 와 선택이 비므로, 뗀 자리로 한 번 옮겨 준다
+      if (e.button === 0) {
+        const mv = new MouseEvent('mousemove', { bubbles: true, clientX: e.clientX, clientY: e.clientY, buttons: 1, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, view: window });
+        mv.bimoSynthetic = true;
+        e.target.dispatchEvent(mv);
+      }
       mouseTerm = null;
-      setTimeout(() => copySelection(n, true)); // xterm 이 선택을 확정한 뒤. 직접 뗀 드래그는 같은 글자여도 다시 복사(그사이 클립보드가 바뀌었을 수 있다)
+      n.justUp = true; // 이어지는 xterm mouseup 에서 선택이 확정되면 onSelectionChange 가 바로 복사한다
+      // 선택이 안 바뀐 경우(같은 선택) 대비. 직접 뗀 드래그는 같은 글자여도 다시 복사(그사이 클립보드가 바뀌었을 수 있다)
+      setTimeout(() => { if (n.justUp) { n.justUp = false; copySelection(n, true); } });
     }
   }, true);
 }
@@ -1338,15 +1378,22 @@ for (const type of ['mousedown', 'mousemove', 'mouseup', 'click', 'dblclick', 'c
 const releaseMouse = () => {
   const n = mouseTerm;
   mouseTerm = null;
-  if (n) setTimeout(() => copySelection(n));
+  if (!n) return;
+  // xterm 도 mouseup 을 못 받아 아직 끄는 중이다(다시 들어온 포인터를 따라 선택이 늘어난다) → 끌기를 끝내는 mouseup 을 대신 보낸다
+  const up = new MouseEvent('mouseup', { bubbles: true, button: mouseBtn, view: window });
+  up.bimoSynthetic = true;
+  document.dispatchEvent(up);
+  setTimeout(() => copySelection(n));
 };
 addEventListener('blur', releaseMouse);
 addEventListener('pointercancel', releaseMouse, true);
 
 // 터미널에서 드래그·더블클릭으로 고른 글자는 바로 클립보드로. mouseup 과 선택 변경이 겹쳐도 같은 글자는 한 번만 (force = 오른쪽 클릭·mouseup)
-function copySelection(n, force) {
+// quiet = 끄는 중 미리 복사: 클립보드만 채우고 알림·n.copied 는 뗄 때 한 번만
+function copySelection(n, force, quiet) {
   const s = n.term.hasSelection() ? n.term.getSelection() : '';
   if (!s || (!force && s === n.copied)) return;
+  if (quiet) return void api.copy(s);
   n.copied = s;
   api.copy(s);
   toast(tr('ui.toast.copied'), 'copy');
@@ -1497,6 +1544,7 @@ function renderGroups() {
     label.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       e.stopPropagation(); // 보드 이동으로 가지 않게
+      raiseGroup(key);
       dragGroup(e, list, () => openColorPicker(key, label));
     });
     const add = el('button', 'group-add', '+');
@@ -1511,9 +1559,14 @@ function renderGroups() {
     kill.title = tr('ui.group.closeAllTitle', { name, n: list.length });
     kill.addEventListener('pointerdown', (e) => e.stopPropagation());
     kill.addEventListener('click', () => closeGroup(name, list));
+    // 처음 보는 프로젝트는 지금 세션들 위(예전처럼 캐릭터에 안 가리게). 이후엔 raiseGroup 이 정한 층
+    if (!groupZ.has(key)) groupZ.set(key, ++topZ);
+    tag.style.zIndex = kill.style.zIndex = groupZ.get(key);
+    tagsOf.set(key, [tag, kill]);
     frame.append(tag, kill);
     frames.push(frame);
   }
+  for (const k of [...tagsOf.keys()]) if (!byProject.has(k)) { tagsOf.delete(k); groupZ.delete(k); }
   groupsEl.replaceChildren(...frames);
   coversEl.replaceChildren(...covers);
 }
@@ -1907,6 +1960,7 @@ function onAgentEvent(n, e) {
           status: 'running',
           start: Date.now(),
           tools: 0,
+          bg: !!input.run_in_background,
         });
       } else if (e.agent_id && e.tool_name !== 'SubagentHandback') {
         const a = byAgentId(e.agent_id);
@@ -1946,6 +2000,16 @@ function onAgentEvent(n, e) {
       const a = agents.get(e.tool_use_id);
       if (!a) return;
       finish(a, 'error', e.error);
+      break;
+    }
+    // 중단(Esc·Request interrupted)되면 포그라운드 서브 에이전트는 PostToolUse·SubagentStop 없이 끝난다.
+    // 포그라운드는 부모 턴보다 오래 못 사니 부모 턴이 끝나거나 새 프롬프트가 오면 남은 카드를 닫는다.
+    case 'Stop':
+    case 'UserPromptSubmit': {
+      if (e.agent_id) return;
+      const left = [...agents.values()].filter((a) => a.status === 'running' && !a.bg);
+      if (!left.length) return;
+      for (const a of left) finish(a, 'stopped');
       break;
     }
     default:
@@ -2626,6 +2690,8 @@ function closeGroupMenu() {
 }
 addEventListener('pointerdown', (e) => { if (groupMenuFor != null && !e.target.closest('#group-menu, .group-add, .wt-new, .wt-sessions, .node .agent, .critter-btn')) closeGroupMenu(); }, true);
 addEventListener('keydown', (e) => { if (e.key === 'Escape' && groupMenuFor != null) closeGroupMenu(); });
+// 메뉴 위치는 열 때 버튼 기준으로 고정한다(position: fixed). 창 크기가 바뀌면 버튼과 어긋나므로 닫는다.
+addEventListener('resize', closeGroupMenu);
 
 // --- 세션 가져오기: 다른 터미널에서 했던 Claude·Codex·Cursor 대화를 보드에서 이어 열기 ---
 const IMPORT_AGENTS = ['claude', 'codex', 'cursor-agent'];
