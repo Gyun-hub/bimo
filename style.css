@@ -147,6 +147,8 @@ body.has-docs #viewport, #docs { top: 88px; }
 .path-rtl { direction: rtl; text-align: left; }
 /* 파일 탭이 보드를 덮는 동안 보드용 떠 있는 도구(단축키·미니맵·배율)는 숨긴다. 보내기 줄(#cast)은 남긴다 */
 body:has(#docs:not([hidden])) #keys, body:has(#docs:not([hidden])) #corner { display: none; }
+/* 남은 #cast(아래 16px + 높이 40px, 멘션 목록은 위로 떠서 높이 불변 — 2026-11-19 실측) 위 8px 에서 문서 본문이 끝나게. 배경은 끝까지 덮는다 */
+#docs { padding-bottom: 64px; }
 .doc-ext { flex: none; background: var(--raised); border: 0; border-radius: var(--r-xs); padding: 2px 10px; color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
 .doc-ext:hover { background: #2d3039; }
 .doc-ext[hidden] { display: none; }

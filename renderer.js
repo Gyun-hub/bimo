@@ -2411,6 +2411,9 @@ api.appVersion().then((v) => {
 // 업데이트 뒤 처음 켜면 바뀐 점 목록. "닫기" 는 다음에 켤 때 또 뜨고, "다시 보지 않기" 는 이 버전에서 다시 안 뜬다.
 // 버전을 올릴 때 맨 위에 한 덩어리 추가한다.
 const CHANGES = [
+  { v: '1.3.2', items: [
+    { ko: '파일 탭에서 아래 보내기 줄이 문서 마지막 줄을 가리던 문제를 고쳤습니다.', en: 'Fixed the send bar at the bottom covering the last lines of a document in file tabs.' },
+  ] },
   { v: '1.3.1', items: [
     { ko: '한글을 칠 때 단어 끝 글자가 빠지던 문제를 고쳤습니다(예: \'다니고 있는\' 이 \'다니 있는\' 으로 들어감).', en: 'Fixed the last syllable of a Korean word being dropped while typing (e.g. \'다니고 있는\' came out as \'다니 있는\').' },
   ] },
