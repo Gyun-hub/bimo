@@ -1246,12 +1246,15 @@ async function addNode(data) {
   // xterm 은 Enter·붙여넣기·blur 때만 숨은 입력칸(textarea)을 비워 Shift+Enter 로 여러 줄 쓰면 글이 계속 쌓인다.
   // 한글 IME 가 조합 이벤트 없이 글자를 바꾸면(화면 캡처·한/영 전환 뒤) xterm 이 이전 값과 비교에 실패해 쌓인 글 전체를 다시 보낸다.
   // → 조합 중이 아닐 때 키를 뗄 때마다 비워 둔다. xterm 이 보내기를 끝낸 뒤(setTimeout 0)에 비운다 — 위 imeEnd 공백보다도 뒤라 "안녕 " 순서는 그대로다.
+  // 단, keyup 이 건 타이머가 돌기 전에 keydown·조합 이벤트가 끼면 비우지 않는다. 바쁠 때 "ㅗ keyup → compositionend → 타이머" 순서가 되면
+  // xterm 이 compositionend 뒤 setTimeout(0) 에서 읽을 확정 글자("고")를 먼저 지워 버린다(1.3.0 "다니 있는" 버그). 비우기는 다음 keyup 에 맡긴다.
   const ta = term.textarea;
-  let composing = false;
-  ta.addEventListener('compositionstart', () => { composing = true; });
-  ta.addEventListener('compositionend', () => { composing = false; });
+  let composing = false, taGen = 0;
+  ta.addEventListener('compositionstart', () => { composing = true; taGen++; });
+  ta.addEventListener('compositionend', () => { composing = false; taGen++; });
+  ta.addEventListener('keydown', () => { taGen++; });
   ta.addEventListener('blur', () => { composing = false; });
-  ta.addEventListener('keyup', () => setTimeout(() => { if (!composing) ta.value = ''; }, 0));
+  ta.addEventListener('keyup', () => { const g = taGen; setTimeout(() => { if (!composing && g === taGen) ta.value = ''; }, 0); });
   term.attachCustomKeyEventHandler((e) => {
     // Space: 공백은 누르는 즉시 보내고, 꾹 누르면(반복 keydown) 이동 모드. 실제로 끌기 시작하면 그 공백을 지운다(viewport pointerdown). 한글 조합 중(229)은 건드리지 않는다.
     if (e.code === 'Space' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
@@ -2408,6 +2411,9 @@ api.appVersion().then((v) => {
 // 업데이트 뒤 처음 켜면 바뀐 점 목록. "닫기" 는 다음에 켤 때 또 뜨고, "다시 보지 않기" 는 이 버전에서 다시 안 뜬다.
 // 버전을 올릴 때 맨 위에 한 덩어리 추가한다.
 const CHANGES = [
+  { v: '1.3.1', items: [
+    { ko: '한글을 칠 때 단어 끝 글자가 빠지던 문제를 고쳤습니다(예: \'다니고 있는\' 이 \'다니 있는\' 으로 들어감).', en: 'Fixed the last syllable of a Korean word being dropped while typing (e.g. \'다니고 있는\' came out as \'다니 있는\').' },
+  ] },
   { v: '1.3.0', items: [
     { ko: '사이드바를 새로 디자인했습니다. 프로젝트 이름만 한 줄로 보이고, "고정" 과 "전체 프로젝트" 칸, 보드에 세션이 열린 것만 보는 [열린 것만] 필터가 생겼습니다. 줄을 누르면 보드가 그 프로젝트로 이동합니다.', en: 'Redesigned sidebar: one line per project name, "Pinned" and "All projects" sections, and an [Open only] filter for projects with sessions on the board. Click a row to move the board to that project.' },
     { ko: '줄의 ⋯ 메뉴(오른쪽 클릭과 같음)에 모았습니다. 이름 바꾸기(F2)·색 바꾸기·그룹에 넣기(노션처럼 고르거나 새로 만들기)·맨 위에 고정·숨기기, 그리고 새 세션(Enter)·했던 세션·예약…도 여기서 합니다.', en: 'Everything is in the row\'s ⋯ menu (same as right-click): Rename (F2), Change color, Add to group… (pick or create, Notion-style), Pin to top, Hide, plus New session (Enter), Past sessions, and Schedule….' },
