@@ -102,7 +102,10 @@ body.os-darwin #launcher { padding-left: 80px; }
 /* 빠른 파일 열기 (Ctrl+P) */
 #quick-open { position: fixed; top: 88px; left: 50%; z-index: 47; width: min(560px, 90vw); transform: translateX(-50%); background: var(--surface); border-radius: var(--r-md); box-shadow: var(--e3), 0 0 0 1px #ffffff12; overflow: hidden; }
 #quick-open[hidden] { display: none; }
-body.side-open #quick-open { left: calc(50% + var(--side-w, 300px) / 2); } /* 사이드바가 열리면 내용 영역 가운데 */
+/* 사이드바·파일 패널이 열리면 내용 영역 가운데 */
+body.side-open { --side-off: var(--side-w, 300px); }
+body.files-open { --files-off: var(--files-w, 300px); }
+body.side-open #quick-open, body.files-open #quick-open { left: calc(50% + (var(--side-off, 0px) - var(--files-off, 0px)) / 2); }
 #qo-input { box-sizing: border-box; width: 100%; background: transparent; border: 0; border-bottom: 1px solid var(--line); color: var(--text); font: inherit; padding: 12px 14px; outline: none; }
 #qo-list { max-height: min(420px, 60vh); overflow-y: auto; margin: 0; padding: 6px; list-style: none; }
 .qo-item { display: flex; align-items: baseline; gap: 10px; padding: 6px 10px; border-radius: var(--r-xs); cursor: pointer; white-space: nowrap; }
@@ -381,6 +384,9 @@ body.ctrl:not(.hand) #viewport .node:not(.doc-card), body.ctrl:not(.hand) #viewp
 .corner-row { display: flex; gap: 6px; }
 .corner-row button { background: var(--surface); border: 0; border-radius: var(--r-sm); padding: 5px 10px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; box-shadow: var(--e2); cursor: pointer; }
 .corner-row button:hover { color: var(--text); }
+/* 배율 고르기: 화살표는 기본 select 것을 쓴다(#cast select 와 같음) */
+.corner-row select { background: var(--surface); border: 0; border-radius: var(--r-sm); padding: 5px 6px; color: var(--muted); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; box-shadow: var(--e2); cursor: pointer; }
+.corner-row select:hover { color: var(--text); }
 
 /* 아래 가운데: 여러 세션에 같은 말 보내기 */
 #cast { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 15; width: min(560px, calc(100% - 280px)); display: flex; align-items: center; gap: 4px; padding: 4px; background: #1b1d23ee; border-radius: var(--r-md); box-shadow: var(--e3); }
@@ -389,6 +395,10 @@ body.ctrl:not(.hand) #viewport .node:not(.doc-card), body.ctrl:not(.hand) #viewp
 #cast button { background: var(--raised); border: 0; border-radius: var(--r-sm); padding: 6px 12px; font-size: 12px; font-weight: 500; cursor: pointer; }
 #cast button:hover { background: #2d3039; }
 #cast-text.bad { color: var(--fail); }
+#cast { transition: opacity .15s; }
+#cast:not(:hover):not(:focus-within) { opacity: .2; } /* 안 쓸 땐 흐리게: 아래 세션 글자가 비쳐 보이게 */
+/* 파일 패널이 열려 보드가 좁아지면 가운데 보내기 줄이 오른쪽 아래 도구(#corner, 약 232px)와 겹친다 → 도구 왼쪽 남은 칸 안에서 가운데로 */
+body.files-open #cast { left: 16px; right: 260px; width: auto; max-width: 560px; margin: 0 auto; transform: none; }
 
 /* 새로고침: 도는 아이콘 + 입력창 위 짧은 알림 */
 .spinning svg { animation: spin .8s linear infinite; }
@@ -427,7 +437,6 @@ body.ctrl:not(.hand) #viewport .node:not(.doc-card), body.ctrl:not(.hand) #viewp
 #side-open-only { flex: none; padding: 0 9px; background: var(--board); border: 0; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px var(--line); color: var(--muted); font-size: 12px; white-space: nowrap; cursor: pointer; }
 #side-open-only:hover { color: var(--text); }
 #side-open-only[aria-pressed='true'] { color: var(--signal); background: #f0c94a14; box-shadow: inset 0 0 0 1px var(--signal); font-weight: 600; }
-#sidebar.tab-files .side-search { display: none; }
 #side-search { box-sizing: border-box; width: 100%; background: var(--board); border: 0; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px var(--line); color: var(--text); font: inherit; font-size: 12.5px; padding: 6px 10px; outline: none; }
 #side-search:focus { box-shadow: inset 0 0 0 1px var(--signal); }
 /* 사이드바 끌기: 원래 자리는 흐리게, 놓을 자리는 선(순서) 또는 묶음 강조(합치기) */
@@ -449,18 +458,18 @@ body.side-dragging, body.side-dragging * { cursor: grabbing !important; user-sel
 .proj { margin-top: 2px; }
 .alias-group, #side-list > .proj:has(> .proj-head) { margin-top: 8px; }
 .proj-head { display: flex; align-items: center; gap: 2px; }
-.side-head .side-tabs { flex: 1; }
-.side-tabs { display: flex; gap: 2px; }
-.side-tabs button { height: 26px; padding: 0 10px; border: 0; border-radius: var(--r-xs); background: none; color: var(--muted); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
-.side-tabs button:hover { color: var(--text); background: var(--hover); }
-.side-tabs button[aria-selected="true"] { color: var(--text); background: #ffffff12; }
-#sidebar.tab-files #side-add, #sidebar.tab-files #side-refresh { display: none; }
-#side-files { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-#side-files[hidden] { display: none; }
-.files-head { display: flex; flex-direction: column; gap: 2px; padding: 6px 18px 4px; min-width: 0; }
+/* 오른쪽 파일 패널: 왼쪽 사이드바와 대칭(왼쪽 가장자리 hairline·보드 쪽 그림자, 왼쪽 가장자리 끌어 폭 조절) */
+#files-panel { position: absolute; top: 52px; right: 0; bottom: 0; width: var(--files-w, 300px); display: flex; flex-direction: column; background: var(--surface); box-shadow: inset 1px 0 0 var(--edge), -1px 0 0 #00000080, -12px 0 24px -16px #000000b3; z-index: 5; }
+#files-panel[hidden] { display: none; }
+.files-resize { position: absolute; top: 0; left: -3px; bottom: 0; width: 6px; cursor: ew-resize; z-index: 1; }
+.files-resize:hover, .files-resize.on { background: linear-gradient(var(--signal), var(--signal)) center / 2px 100% no-repeat; opacity: .6; }
+.files-head { display: flex; flex-direction: column; gap: 2px; padding: 12px 12px 6px; min-width: 0; }
+body.files-open #viewport, body.files-open #doc-tabs, body.files-open #docs { right: var(--files-w, 300px); }
+#files-toggle { width: 28px; height: 28px; }
+#files-toggle[aria-expanded='true'] { color: var(--text); }
 .proj-head .wt-more { flex: none; width: 22px; height: 22px; opacity: 0; }
 /* 머리·사이드바 아이콘 크기 하나(16px) */
-#side-toggle svg, #agents-refresh svg, #settings-btn svg, #side-add svg, #side-refresh svg { width: 16px; height: 16px; }.proj-head:hover .wt-more, .proj-head .wt-more:focus-visible, .proj-head.menu-on .wt-more { opacity: 1; }
+#side-toggle svg, #files-toggle svg, #agents-refresh svg, #settings-btn svg, #side-add svg, #side-refresh svg { width: 16px; height: 16px; }.proj-head:hover .wt-more, .proj-head .wt-more:focus-visible, .proj-head.menu-on .wt-more { opacity: 1; }
 /* 사이드바 v2: 칸 머리(고정/프로젝트), 숨긴 항목, 줄 안 이름 고치기 */
 /* 머리 높이는 하나(32px): 칸 머리·그 밖의 프로젝트·등록 안 된 폴더·그룹 머리 */
 #side-list .proj-head { box-sizing: border-box; height: 28px; padding-right: 6px; } /* 오른쪽 여백 6 = 줄과 같아 그룹 머리 ⋯ 도 같은 x */
@@ -622,12 +631,9 @@ body.side-dragging, body.side-dragging * { cursor: grabbing !important; user-sel
 @media (prefers-reduced-motion: reduce) { .wt.st-working .state { animation: none; } }
 /* 7 사이드바 면 깊이: 안쪽 가장자리 hairline + 보드 쪽 그림자 */
 #sidebar { box-shadow: inset -1px 0 0 var(--edge), 1px 0 0 #00000080, 12px 0 24px -16px #000000b3; }
-/* 8 탭: 머리줄 AI 고르기와 같은 segmented */
+/* 8 머리: 제목 + 오른쪽 아이콘 버튼 (파일은 오른쪽 패널로 옮겨 탭이 없다) */
 .side-head { justify-content: flex-start; gap: 2px; padding: 10px 12px 6px; }
-.side-head .side-tabs { flex: none; padding: 2px; gap: 2px; background: var(--board); border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px var(--line); }
-.side-tabs button { height: 24px; padding: 0 12px; border-radius: var(--r-xs); }
-.side-tabs button:hover { background: none; }
-.side-tabs button[aria-selected="true"] { background: var(--raised); box-shadow: var(--e2); color: var(--text); }
+.side-head .side-title { padding-left: 4px; }
 /* 10 머리 아이콘 버튼 28px, 오른쪽 끝으로 */
 #side-add { margin-left: auto; }
 #side-add, #side-refresh { width: 28px; height: 28px; }
@@ -654,7 +660,7 @@ body.side-dragging, body.side-dragging * { cursor: grabbing !important; user-sel
 .wt:has(.side-rename) .wt-actions { opacity: 0; }
 .proj-head .wt-more { transition: opacity var(--t-fast); }
 /* 15 사이드바·머리 아이콘 선 굵기 하나(1.5) */
-#sidebar svg [stroke], #side-toggle svg [stroke], #agents-refresh svg [stroke], #settings-btn svg [stroke] { stroke-width: 1.5; }
+#sidebar svg [stroke], #files-panel svg [stroke], #side-toggle svg [stroke], #files-toggle svg [stroke], #agents-refresh svg [stroke], #settings-btn svg [stroke] { stroke-width: 1.5; }
 /* 16 목록 아래 24px 페이드(끝까지 내리면 마지막 줄은 패딩 위라 가려지지 않는다) */
 #side-list { padding-bottom: 28px; -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent); }
 /* 17 폭 조절 손잡이: 호버 때 가운데 2px 노랑 선 */
@@ -716,6 +722,10 @@ body.hand .rz { cursor: inherit; }
 .doc-card iframe { position: absolute; left: 6px; top: 0; width: calc((100% - 12px) * var(--zs, 1)); height: calc((100% - 6px) * var(--zs, 1)); transform: scale(calc(1 / var(--zs, 1))); transform-origin: 0 0; border: 0; border-radius: calc(var(--r-xs) * var(--zs, 1)); background: #fff; }
 .doc-card img { max-width: 100%; max-height: 100%; object-fit: contain; }
 .doc-msg { color: var(--muted); font-size: 12.5px; padding: 16px; text-align: center; }
+/* MD·코드 카드: 본문이 카드 안에서 스크롤. 글자는 DOM 이라 보드 배율에 맞춰 다시 그려져 선명하다(PDF 역보정 불필요) */
+.doc-card .body.card-md { display: block; overflow: auto; padding: 12px 18px 16px; user-select: text; }
+.doc-card .body.card-code { display: block; padding: 0 0 6px; }
+.doc-card .card-code .CodeMirror { height: 100%; font: 12.5px/1.6 'Cascadia Mono', Consolas, Menlo, monospace; }
 body.dragging iframe, body.hand .doc-card iframe { pointer-events: none; }
 @keyframes flash { from { box-shadow: 0 0 0 3px var(--signal), var(--e3); } }
 
@@ -833,7 +843,7 @@ body.rack-brief .crz { display: none; }
 .sub-x:disabled { opacity: .4; cursor: default; }
 
 /* 서브 에이전트 대화 패널 */
-/* 사이드바 파일 탭: 트리. 파일을 누르면 가운데 큰 보기 창 */
+/* 오른쪽 파일 패널: 트리. 파일을 누르면 가운데 큰 보기 창 */
 #files-title { font-weight: 600; font-size: 14px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #files-meta { color: var(--muted); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: left; }
 .files-tools { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); }

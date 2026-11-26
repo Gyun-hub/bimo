@@ -12,6 +12,7 @@ const transcript = require('./lib/transcript');
 const sessions = require('./lib/sessions');
 const sched = require('./lib/schedule');
 const { startWait } = require('./lib/waits');
+const { createKeyQueue } = require('./lib/key-queue');
 const { t } = require('./locales');
 
 // --smoke: 기본 보드로 띄워 스크린샷(%TEMP%\bimo-smoke.png)만 찍고 종료. 저장된 보드는 건드리지 않는다.
@@ -28,6 +29,7 @@ app.commandLine.appendSwitch('disable-features', 'HideCursorWhileTyping');
 const boardFile = path.join(app.getPath('userData'), 'board.json');
 const hookDir = path.join(app.getPath('userData'), 'hooks');
 const ptys = new Map();
+const keyQueue = createKeyQueue((id, data) => ptys.get(id)?.write(data));
 let win;
 let hookPort;
 
@@ -79,11 +81,11 @@ function mcpRoute(caller, route, body, res) {
   // 답은 claude 의 Stop 훅, codex 의 notify(agent-turn-complete)로만 알 수 있다
   const wait = body.wait !== false && (target.command === 'claude' || target.command === 'codex');
   // 붙여넣기(bracketed paste)로 보내야 여러 줄이 중간에 실행되지 않는다. Enter 는 따로 보낸다.
-  const p = ptys.get(target.id);
+  // 사용자가 그 세션 입력창을 지우는 중(pty:keys)이면 지우기 키가 다 나간 뒤에 들어가게 큐를 거친다
   // 본문의 ESC 는 뺀다 — \x1b[201~ 로 붙여넣기를 일찍 끝내고 나머지를 키 입력으로 넣을 수 있다
-  p.write(`\x1b[200~${codex.callPrefix(me.name)} ${String(body.message).replace(/\x1b/g, '')}\x1b[201~`);
+  keyQueue.write(target.id, `\x1b[200~${codex.callPrefix(me.name)} ${String(body.message).replace(/\x1b/g, '')}\x1b[201~`);
   // shortcut: codex 입력창은 붙여넣기 직후 Enter 를 줄바꿈으로 받을 수 있어 늦춘다. 600ms 는 실측 안 된 값 — 실제 Codex 로 재 보고 조정.
-  setTimeout(() => ptys.get(target.id)?.write('\r'), target.command === 'codex' ? 600 : 120);
+  setTimeout(() => keyQueue.write(target.id, '\r'), target.command === 'codex' ? 600 : 120);
   send('call:start', { callId, from: caller, to: target.id, wait });
   if (!wait) {
     setTimeout(() => send('call:end', callId), 1500);
@@ -394,12 +396,14 @@ ipcMain.handle('pty:spawn', (e, { id, command, cwd, cols, rows, sessionId, perm 
     const useConptyDll = !process.env.BIMO_INBOX_CONPTY;
     // 화면을 다시 불러오면(Ctrl+R) 같은 id 로 다시 온다 — 옛 pty 를 고아로 남기지 않게 끈다. AI 바꾸기는 exit 뒤에 오므로 여기 안 걸린다.
     ptys.get(id)?.kill();
+    keyQueue.drop(id); // 옛 pty 에 보내던 지우기 키가 새 pty 로 새지 않게
     const p = pty.spawn(shell, args, { name: 'xterm-256color', cwd: dir, cols, rows, env: childEnv(), ...(isWin && { useConptyDll }) });
     const entry = isCodex ? { at: spawnAt, cwd: dir, sid: resumeId } : null;
     p.onData((data) => ptys.get(id) === p && send('pty:data', id, data));
     p.onExit(({ exitCode }) => {
       if (ptys.get(id) !== p) return; // 같은 id 로 새로 띄운 pty 가 있으면 그쪽의 자리·대기·화면을 건드리지 않는다
       ptys.delete(id);
+      keyQueue.drop(id);
       if (entry && codexNodes.get(id) === entry) codexNodes.delete(id); // 다시 띄운 새 엔트리는 남긴다
       waits.get(id)?.done({ error: '받는 세션이 종료돼 답을 받지 못했습니다.' });
       send('pty:exit', id, exitCode);
@@ -650,13 +654,10 @@ ipcMain.handle('dialog:folder', async (e, start) => {
   });
   return r.canceled ? null : r.filePaths[0];
 });
-ipcMain.on('pty:write', (e, id, data) => ptys.get(id)?.write(data));
+// 키를 보내는 중에 친 글은 키가 다 나간 뒤에 보낸다 (lib/key-queue.js)
+ipcMain.on('pty:write', (e, id, data) => keyQueue.write(id, data));
 // 키를 하나씩 띄워 보낸다. 몰아 보내면 TUI 가 붙여넣기로 읽는다. 창이 가려져도 느려지지 않게 메인에서 센다.
-ipcMain.on('pty:keys', (e, id, keys, gap) => {
-  let i = 0;
-  const next = () => { if (i < keys.length) { ptys.get(id)?.write(keys[i++]); setTimeout(next, gap); } };
-  next();
-});
+ipcMain.on('pty:keys', (e, id, keys, gap) => keyQueue.keys(id, keys, gap));
 ipcMain.on('pty:resize', (e, id, cols, rows) => ptys.get(id)?.resize(cols, rows));
 ipcMain.on('pty:kill', (e, id) => ptys.get(id)?.kill());
 

@@ -60,7 +60,10 @@ function applyView() {
   boardEl.style.transform = `translate(${x}px, ${y}px) scale(${s})`;
   viewport.style.backgroundSize = `${24 * s}px ${24 * s}px`;
   viewport.style.backgroundPosition = `${x}px ${y}px`;
-  $('zoom').textContent = `${Math.round(s * 100)}%`;
+  // 목록에 없는 배율(Ctrl+휠로 73% 등)은 숨긴 첫 항목에 적어 보인다
+  const z = $('zoom'), pct = Math.round(s * 100);
+  z.value = String(pct / 100);
+  if (z.selectedIndex < 1) { $('zoom-now').textContent = `${pct}%`; z.selectedIndex = 0; }
   // 멀리 보기 덮개: 이름 글자는 배율을 거꾸로 곱해 화면에서 늘 비슷한 크기로
   boardEl.classList.toggle('far', s <= FAR_SCALE);
   boardEl.style.setProperty('--inv', 1 / s);
@@ -422,9 +425,9 @@ function setFocused(n) {
   focused = n;
   n.el.classList.add('focused');
 }
-// 파일 탭을 보고 있으면 그 세션의 프로젝트 트리로 바꾼다
+// 파일 패널이 열려 있으면 그 세션의 프로젝트 트리로 바꾼다
 function syncFilesTo(n) {
-  if (!$('sidebar').hidden && !$('side-files').hidden && n.data.cwd && !(fx.root && samePath(n.data.cwd, fx.root))) openFiles(n.data.cwd);
+  if (!$('files-panel').hidden && n.data.cwd && !(fx.root && samePath(n.data.cwd, fx.root))) openFiles(n.data.cwd);
 }
 
 // --- 세션 상태: 빨강 = 일하는 중, 노랑 = 나를 기다림(답 옴·권한 요청), 초록 = 대기 ---
@@ -1254,6 +1257,27 @@ async function addNode(data) {
   ta.addEventListener('compositionend', () => { composing = false; taGen++; });
   ta.addEventListener('keydown', () => { taGen++; });
   ta.addEventListener('blur', () => { composing = false; });
+  // 한글 조합 중에 보드를 누르면 마지막 글자가 사라졌다: 조합 끝 글자는 xterm 이 setTimeout 뒤에 입력칸에서 읽어 보내는데,
+  // xterm 의 blur 가 그 전에 입력칸을 비운다. → 비우기 전에(캡처라 xterm blur 보다 먼저 돈다) 그 글자를 바로 보낸다.
+  // 보낸 뒤 xterm 의 대기 중 보내기는 빈 입력칸을 읽어 아무것도 안 보내므로 두 번 들어가지 않는다.
+  // xterm 내부 값(6.0.0 CompositionHelper)이다 — xterm 을 올리면 다시 확인. 없으면 조용히 건너뛴다.
+  const ime = term._core?._compositionHelper;
+  // 조합을 막 시작해 끝 위치가 아직 지난 조합 값일 때(end < start) Enter 등이 오면 xterm 은 substring(start, end) 로
+  // 앞뒤가 뒤집힌 구간 = 앞서 친 글을 다시 보낸다(빠르게 쳐서 위 keyup 비우기가 밀렸을 때). → 그때는 끝 위치를 지금 입력칸 끝으로 맞춘다.
+  const fin = ime?._finalizeComposition;
+  if (typeof fin === 'function' && ime._compositionPosition && ime._textarea) ime._finalizeComposition = function (wait) {
+    if (this._compositionPosition.end < this._compositionPosition.start) this._compositionPosition.end = this._textarea.value.length;
+    return fin.call(this, wait);
+  };
+  ta.addEventListener('blur', () => {
+    if (!ime?._compositionPosition || !ime._coreService || (!ime.isComposing && !ime._isSendingComposition)) return;
+    const s = ta.value.substring(ime._compositionPosition.start + (ime._dataAlreadySent?.length ?? 0));
+    ime._isSendingComposition = false;
+    // blur 뒤엔 compositionend 가 안 올 수 있다 → 조합 상태와 조합 미리보기 글자를 직접 끈다(안 끄면 "지금금" 처럼 겹쳐 보인다)
+    ime._isComposing = false;
+    ime._compositionView?.classList.remove('active');
+    if (s) ime._coreService.triggerDataEvent(s, true);
+  }, true);
   ta.addEventListener('keyup', () => { const g = taGen; setTimeout(() => { if (!composing && g === taGen) ta.value = ''; }, 0); });
   term.attachCustomKeyEventHandler((e) => {
     // Space: 공백은 누르는 즉시 보내고, 꾹 누르면(반복 keydown) 이동 모드. 실제로 끌기 시작하면 그 공백을 지운다(viewport pointerdown). 한글 조합 중(229)은 건드리지 않는다.
@@ -1275,8 +1299,9 @@ async function addNode(data) {
       return false;
     }
     if (isMac) return true;
-    const ctrlV = e.code === 'KeyV' && e.ctrlKey && !e.altKey && !e.metaKey;
-    const shiftIns = e.code === 'Insert' && e.shiftKey && !e.ctrlKey && !e.altKey;
+    // code 만 보지 않는다: Win+V 기록창이 넣는 Ctrl+V 는 스캔코드가 없어 code 가 비어 올 수 있고, 한글 IME 에서는 key 가 'ㅍ' 다 → keyCode 도 본다
+    const ctrlV = (e.code === 'KeyV' || e.key === 'v' || e.key === 'V' || e.keyCode === 86) && e.ctrlKey && !e.altKey && !e.metaKey;
+    const shiftIns = (e.code === 'Insert' || e.key === 'Insert' || e.keyCode === 45) && e.shiftKey && !e.ctrlKey && !e.altKey;
     if (!ctrlV && !shiftIns) return true;
     if (e.type === 'keydown') {
       e.preventDefault();
@@ -1708,7 +1733,10 @@ viewport.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefa
 viewport.addEventListener('wheel', (e) => {
   if (e.target.closest('#corner, #cast, #color-pop')) return; // 패널 안 스크롤은 그대로
   if (!e.ctrlKey && !e.metaKey) { // Mac 트랙패드 핀치는 ctrlKey 로 온다
-    if (tool !== 'hand' && e.target !== viewport && e.target !== boardEl && !e.target.closest('.group-frame, .group-cover')) return;
+    // 트랙패드로 밀다 보면 커서 밑으로 터미널이 들어온다 — 휠이 0.15초 넘게 끊기기 전까지는 계속 보드 이동
+    const panning = performance.now() - (viewport.wheelPanAt ?? 0) < 150;
+    if (!panning && tool !== 'hand' && e.target !== viewport && e.target !== boardEl && !e.target.closest('.group-frame, .group-cover')) return;
+    viewport.wheelPanAt = performance.now();
     e.preventDefault();
     e.stopPropagation();
     if (e.shiftKey) view.x -= e.deltaY || e.deltaX;
@@ -1722,14 +1750,23 @@ viewport.addEventListener('wheel', (e) => {
   e.stopPropagation();
   const r = viewport.getBoundingClientRect();
   const mx = e.clientX - r.left, my = e.clientY - r.top;
-  const k = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, view.scale * (e.deltaY < 0 ? 1.1 : 0.9))) / view.scale;
+  // 핀치는 작은 deltaY 가 잇달아 온다 — 크기만큼 확대. 마우스 휠 한 칸(±100)은 ±10 으로 잘려 약 1.1배
+  const k = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, view.scale * Math.exp(-Math.max(-10, Math.min(10, e.deltaY)) / 100))) / view.scale;
   view.x = mx - (mx - view.x) * k;
   view.y = my - (my - view.y) * k;
   view.scale *= k;
   applyView();
   save();
 }, { passive: false, capture: true });
-$('zoom').addEventListener('click', () => { view = { x: 0, y: 0, scale: 1 }; applyView(); save(); });
+// 배율 고르기: 화면 가운데를 고정점으로
+$('zoom').addEventListener('change', (e) => {
+  const r = viewport.getBoundingClientRect(), cx = r.width / 2, cy = r.height / 2;
+  const k = Number(e.target.value) / view.scale;
+  view = { x: cx - (cx - view.x) * k, y: cy - (cy - view.y) * k, scale: view.scale * k };
+  applyView();
+  save();
+  e.target.blur(); // 포커스가 남으면 V·H·Space 단축키가 select 로 간다
+});
 
 // --- 서브 에이전트 랙 (Claude Code 훅 이벤트) ---
 
@@ -2411,6 +2448,14 @@ api.appVersion().then((v) => {
 // 업데이트 뒤 처음 켜면 바뀐 점 목록. "닫기" 는 다음에 켤 때 또 뜨고, "다시 보지 않기" 는 이 버전에서 다시 안 뜬다.
 // 버전을 올릴 때 맨 위에 한 덩어리 추가한다.
 const CHANGES = [
+  { v: '1.3.3', items: [
+    { ko: '파일 서랍이 오른쪽 패널로 옮겨졌습니다. 오른쪽 위 버튼으로 열고 닫고, 왼쪽 가장자리를 끌어 폭을 바꿉니다.', en: 'The file drawer is now a right-side panel. Open or close it with the button at the top right, and drag its left edge to resize.' },
+    { ko: '파일을 보드에 끌어 놓으면 카드로 볼지 탭으로 볼지 고릅니다. Markdown·코드 파일도 보드 카드로 열립니다.', en: 'Drop a file on the board to choose between a card and a tab. Markdown and code files can now open as board cards too.' },
+    { ko: '오른쪽 아래 배율을 50~105% 중에서 고릅니다. 트랙패드 핀치·두 손가락 이동이 더 부드러워졌습니다.', en: 'Pick a zoom level from 50–105% at the bottom right. Trackpad pinch and two-finger panning are smoother.' },
+    { ko: '한글 입력: 조합 중 다른 곳을 누르면 글자가 사라지거나 겹쳐 보이던 문제, 빠르게 칠 때 앞 글이 다시 들어가던 문제를 고쳤습니다.', en: 'Korean input: fixed characters vanishing or doubling when clicking elsewhere mid-composition, and earlier text being re-entered when typing fast.' },
+    { ko: 'Alt+Backspace 로 지운 직후 친 글이 지워지던 문제를 고쳤습니다.', en: 'Fixed text typed right after Alt+Backspace being erased.' },
+    { ko: 'Windows 클립보드 기록(Win+V)으로 붙여넣기가 안 되던 문제를 고쳤습니다.', en: 'Fixed pasting from Windows clipboard history (Win+V).' },
+  ] },
   { v: '1.3.2', items: [
     { ko: '파일 탭에서 아래 보내기 줄이 문서 마지막 줄을 가리던 문제를 고쳤습니다.', en: 'Fixed the send bar at the bottom covering the last lines of a document in file tabs.' },
   ] },
@@ -2872,14 +2917,13 @@ const dirChanged = (abs) => {
   return !!r && Object.keys(fx.changes).some((k) => k.startsWith(`${r}/`));
 };
 
-// 사이드바 [파일] 탭에 그 폴더의 트리를 연다. 이미 열린 폴더면 탭만 보여 준다.
+// 오른쪽 파일 패널에 그 폴더의 트리를 연다. 이미 열린 폴더면 패널만 보여 준다.
 async function openFiles(dir) {
   if (!dir) return toast(tr('ui.files.homeNo'), true);
-  if ($('sidebar').hidden) setSidebar(true);
   const same = !!fx.root && samePath(fx.root, dir);
-  // root 를 탭 전환보다 먼저 정한다. 비어 있으면 setSideTab 이 다시 openFiles 를 불러 끝없이 돈다(스택 넘침 + git 호출 수천 번).
+  // root 를 패널 열기보다 먼저 정한다. 비어 있으면 setFilesPanel 이 다시 openFiles 를 불러 끝없이 돈다(스택 넘침 + git 호출 수천 번).
   if (!same) Object.assign(fx, { root: dir, top: null, changes: {}, open: new Set(), cache: new Map(), active: null });
-  setSideTab('files');
+  if ($('files-panel').hidden) setFilesPanel(true);
   if (same) return;
   $('files-title').textContent = basename(dir);
   $('files-meta').textContent = dir;
@@ -2892,20 +2936,32 @@ async function openFiles(dir) {
   $('files-only-changed').disabled = !st.top;
   renderFiles();
 }
-// 사이드바 탭: 프로젝트 목록 / 지금 세션의 파일 트리
-function setSideTab(t) {
-  const files = t === 'files';
-  $('tab-projects').setAttribute('aria-selected', !files);
-  $('tab-files').setAttribute('aria-selected', files);
-  $('side-list').hidden = files;
-  $('side-files').hidden = !files;
-  $('sidebar').classList.toggle('tab-files', files);
-  if (files) $('wt-form').hidden = true;
-  pref.set('sideTab', t);
-  if (files && !fx.root && focused?.data.cwd) openFiles(focused.data.cwd);
+// 오른쪽 파일 패널 여닫기(머리줄 오른쪽 끝 버튼). 처음 열 때 고른 세션이 있으면 그 프로젝트 트리를 연다.
+function setFilesPanel(open) {
+  $('files-panel').hidden = !open;
+  document.body.classList.toggle('files-open', open);
+  $('files-toggle').setAttribute('aria-expanded', open);
+  pref.set('filesPanel', open ? '1' : '0');
+  nodes.forEach((n) => n.fit.fit());
+  if (open && !fx.root && focused?.data.cwd) openFiles(focused.data.cwd);
 }
-$('tab-projects').addEventListener('click', () => setSideTab('projects'));
-$('tab-files').addEventListener('click', () => setSideTab('files'));
+$('files-toggle').addEventListener('click', () => setFilesPanel($('files-panel').hidden));
+// 파일 패널 폭: 왼쪽 가장자리를 끌어 바꾼다(220~520px, 사이드바와 같음). 이 PC 설정으로 기억.
+const setFilesW = (w) => document.documentElement.style.setProperty('--files-w', `${w}px`);
+let filesW = Number(pref.get('filesW', '300')) || 300;
+setFilesW(filesW);
+document.querySelector('.files-resize').addEventListener('pointerdown', (e) => {
+  const grip = e.currentTarget;
+  grip.classList.add('on');
+  drag(e, (dx) => {
+    filesW = Math.max(220, Math.min(520, filesW - dx)); // 왼쪽으로 끌면 넓어진다
+    setFilesW(filesW);
+  }, () => {
+    grip.classList.remove('on');
+    pref.set('filesW', String(filesW));
+    nodes.forEach((n) => n.fit.fit());
+  });
+});
 
 
 function fileRow(abs, name, depth, isDir, sub) {
@@ -3013,8 +3069,8 @@ function openFileMenu(e, abs, isDir) {
   const sep = () => el('div', 'gm-sep');
   const parts = [];
   const pick = (asTab) => () => { fx.active = abs; renderFiles(); openViewer({ data: { cwd: root } }, abs, 0, asTab); };
-  // PDF·이미지는 보드 카드(기본) / 파일 탭 중 고른다
-  if (!isDir) parts.push(...(isCardFile(abs) ? [item(tr('ui.fm.openCard'), pick(false)), item(tr('ui.fm.openTab'), pick(true))] : [item(tr('ui.fm.open'), pick(false))]));
+  // 파일은 보드 카드 / 파일 탭 중 고른다(PDF·이미지·MD·코드 모두. 줄을 그냥 누르면 PDF·이미지=카드, 그 밖=탭)
+  if (!isDir) parts.push(item(tr('ui.fm.openCard'), () => { fx.active = abs; renderFiles(); openCard(abs); }), item(tr('ui.fm.openTab'), pick(true)));
   const into = isDir ? abs : dirOf(abs);
   parts.push(item(tr('ui.fm.newFile'), () => newEntry(into, false)), item(tr('ui.fm.newFolder'), () => newEntry(into, true)));
   if (!isRoot) {
@@ -3149,7 +3205,8 @@ async function trashEntry(abs, isDir) {
 
 // F2: 파일 트리에서 고른 파일 이름 바꾸기 (입력칸·편집기·터미널에 있을 땐 그대로)
 addEventListener('keydown', (e) => {
-  if (e.key !== 'F2' || $('side-files').hidden || !fx.active || e.target.closest?.('input, textarea, .xterm, .CodeMirror')) return;
+  // 사이드바 줄의 F2(프로젝트 이름 바꾸기)와 겹치지 않게 사이드바 안에서는 건너뛴다
+  if (e.key !== 'F2' || $('files-panel').hidden || !fx.active || e.target.closest?.('input, textarea, .xterm, .CodeMirror, #sidebar')) return;
   e.preventDefault();
   renameEntry(fx.active);
 });
@@ -3184,9 +3241,11 @@ editor.on('change', () => {
   if (isMd(d.abs)) { clearTimeout(mdTimer); mdTimer = setTimeout(() => renderMd(editor.getValue()), 250); }
 });
 // 남의 저장소 .md 를 열 수도 있다 — 입력·폼·내장 창은 지운다(눌렀을 때 앱 창이 다른 곳으로 넘어가지 않게)
+// 탭 미리보기와 MD 카드가 같이 쓴다
+const mdHtml = (text) => DOMPurify.sanitize(marked.parse(text), { FORBID_TAGS: ['form', 'input', 'button', 'select', 'textarea', 'iframe', 'object', 'embed', 'style'], FORBID_ATTR: ['formaction', 'action'] });
 function renderMd(text) {
   const top = $('doc-md').scrollTop;
-  $('doc-md').innerHTML = DOMPurify.sanitize(marked.parse(text), { FORBID_TAGS: ['form', 'input', 'button', 'select', 'textarea', 'iframe', 'object', 'embed', 'style'], FORBID_ATTR: ['formaction', 'action'] });
+  $('doc-md').innerHTML = mdHtml(text);
   $('doc-md').scrollTop = top;
 }
 // 저장: 연 뒤 다른 곳(AI 등)에서 파일이 바뀌었으면 덮어쓸지 묻는다. 줄바꿈(CRLF/LF)은 원래 파일대로.
@@ -3204,6 +3263,7 @@ async function saveDoc() {
   d.clean = d.cm.changeGeneration();
   d.dirty = false;
   renderDocTabs();
+  cards.forEach((c) => sameFile(c.data.path, d.abs) && refreshCard(c)); // 같은 파일 카드도 바로 새 내용으로
   toast(tr('ui.doc.saved', { name: basename(d.abs) }));
 }
 
@@ -3271,7 +3331,7 @@ function openTabMenu(e, abs) {
   const closeEach = async (list) => { for (const d of list) await closeDoc(d.abs); };
   const i = docs.findIndex((x) => sameFile(x.abs, abs));
   showFileMenu(e, [
-    ...(isCardFile(abs) ? [item(tr('ui.fm.openCard'), () => openCard(abs)), el('div', 'gm-sep')] : []),
+    item(tr('ui.fm.openCard'), () => openCard(abs)), el('div', 'gm-sep'),
     item(tr('ui.tab.close'), () => closeDoc(abs)),
     item(tr('ui.tab.closeOthers'), () => closeEach(docs.filter((d) => !sameFile(d.abs, abs)))),
     item(tr('ui.tab.closeRight'), () => closeEach(docs.slice(i + 1))),
@@ -3501,7 +3561,7 @@ boardEl.addEventListener('drop', (e) => {
 }, true);
 function insertPaths(n, files) {
   api.write(n.data.id, files.map((f) => {
-    const p = (n.data.cwd && relTo(n.data.cwd, f)) ?? f.replace(/\\/g, '/');
+    const p = (n.data.cwd && relTo(n.data.cwd, f)) || f.replace(/\\/g, '/'); // || : 홈 폴더 세션(cwd '')이면 '' 가 아니라 전체 경로
     return /\s/.test(p) ? `@"${p}" ` : `@${p} `;
   }).join(''));
   n.term.focus();
@@ -3528,8 +3588,26 @@ viewport.addEventListener('drop', (e) => {
   if (!files.length) return;
   const n = nodeOfEl.get(e.target.closest?.('.node'));
   if (n) insertPaths(n, files);
-  else openViewer({ data: {} }, files[0], 0);
+  else dropMenu(e, files[0]);
 }, true);
+// 파일 패널에서 끌어 온 파일을 보드 빈 곳에 놓으면(세션 창 위는 위 boardEl 처리가 먼저 @경로로 받는다) 카드/탭 메뉴. 폴더 줄은 끌 수 없다.
+const emptyDrop = (e) => !e.target.closest?.('.node, #corner, #cast, #keys, #inbox, #color-pop');
+viewport.addEventListener('dragover', (e) => { if (fileDrag && emptyDrop(e)) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } });
+viewport.addEventListener('drop', (e) => {
+  if (!fileDrag || !emptyDrop(e)) return;
+  e.preventDefault();
+  const abs = fileDrag;
+  fileDrag = null;
+  dropMenu(e, abs);
+});
+// 놓은 자리에 "보드 위 카드로 / 새 탭으로". 카드는 놓은 보드 좌표(왼쪽 위)에 만든다.
+function dropMenu(e, abs) {
+  const r = viewport.getBoundingClientRect();
+  const at = { x: Math.round((e.clientX - r.left - view.x) / view.scale), y: Math.round((e.clientY - r.top - view.y) / view.scale) };
+  const item = (label, fn) => { const b = el('button', 'gm-item', label); b.addEventListener('click', () => { closeFileMenu(); fn(); }); return b; };
+  closeGroupMenu();
+  showFileMenu(e, [item(tr('ui.fm.openCard'), () => openCard(abs, at)), item(tr('ui.fm.openTab'), () => openViewer({ data: {} }, abs, 0, true))]);
+}
 // 창 밖(헤더·사이드바)에 떨어뜨려도 앱이 그 파일로 넘어가 버리지 않게
 addEventListener('dragover', (e) => { if (osFiles(e)) e.preventDefault(); });
 addEventListener('drop', (e) => { if (osFiles(e)) e.preventDefault(); });
@@ -3538,20 +3616,25 @@ addEventListener('drop', (e) => { if (osFiles(e)) e.preventDefault(); });
 
 const samePath = (a, b) => a.replace(/[\\/]+$/, '').toLowerCase() === b.replace(/[\\/]+$/, '').toLowerCase();
 
-// --- 문서 카드(PDF·이미지): 보드 위 읽기 전용 창 ---
+// --- 문서 카드: 보드 위 읽기 전용 창. PDF·이미지 / Markdown(해석) / 코드·글자(CodeMirror 읽기 전용) ---
 // 터미널을 가정한 코드(n.term·n.fit·협업·보내기)가 많아 nodes 와 따로 둔다. 미니맵·전체 보기·빈 칸 찾기에만 같이 든다.
+// 종류는 확장자로 정한다 — board.json cards 항목 형식은 그대로({ id, path, x, y, w, h }).
 const isCardFile = (p) => /\.(pdf|png|jpe?g|gif|webp)$/i.test(p);
+const cardKind = (p) => (isCardFile(p) ? 'doc' : isMd(p) ? 'md' : 'text');
 const docSize = () => NEW_SIZE; // 새 세션 창과 같은 크기. 저장된 카드는 저장 크기 그대로
 const openExt = (abs) => api.openExternal(abs).then((r) => r?.error && toast(r.error, true), (err) => toast(err.message, true));
 
-async function openCard(abs) {
+// at = 보드 좌표(끌어 놓은 자리). 없으면 빈 칸.
+async function openCard(abs, at) {
   if (docActive) showDoc(null); // 글자 탭이 보드를 덮고 있으면 카드가 안 보인다
   const old = [...cards.values()].find((c) => sameFile(c.data.path, abs));
   if (old) return focusCard(old);
-  const r = await api.openDoc(abs).catch((err) => ({ error: err.message }));
-  if (r?.error || !r?.url) return toast(r?.error || tr('ui.doc.openFail'), true);
+  // 열기 전에 읽어 보고 못 여는 파일(형식·바이너리·1MB 넘음)은 카드를 만들지 않는다 — 탭과 같은 기준(main files:read)
+  const r = cardKind(abs) === 'doc' ? await api.openDoc(abs).catch((err) => ({ error: err.message }))
+    : await api.readFile(abs).catch((err) => ({ error: err.message }));
+  if (r?.error || (!r?.url && typeof r?.text !== 'string')) return toast(r?.error || tr('ui.doc.openFail'), true);
   const [w, h] = docSize(abs);
-  focusCard(addCard({ id: `doc-${crypto.randomUUID()}`, path: abs, ...freeSpot(w, h), w, h }, r));
+  focusCard(addCard({ id: `doc-${crypto.randomUUID()}`, path: abs, ...(at ?? freeSpot(w, h)), w, h }, r));
 }
 
 function addCard(data, doc) {
@@ -3560,12 +3643,14 @@ function addCard(data, doc) {
   const head = el('div', 'head');
   const title = el('span', 'where', name);
   title.title = data.path;
+  const tab = el('button', 'doc-ext', tr('ui.doc.openTab')); // 고치기는 탭에서
+  tab.addEventListener('click', () => openViewer({ data: {} }, data.path, 0, true));
   const ext = el('button', 'doc-ext', tr('ui.doc.openExternal'));
   ext.addEventListener('click', () => openExt(data.path));
   const x = el('button', 'close', '×');
   x.setAttribute('aria-label', tr('ui.doc.close', { name }));
   x.addEventListener('click', () => { c.el.remove(); cards.delete(data.id); save(); });
-  head.append(title, ext, x);
+  head.append(title, tab, ext, x);
   head.addEventListener('pointerdown', (e) => {
     if (e.target.closest('button')) return;
     // 세션 창과 같은 마그넷. Alt 를 누르면 끈다.
@@ -3584,11 +3669,11 @@ function addCard(data, doc) {
     const rz = el('div', `rz rz-${d}`);
     rz.addEventListener('pointerdown', (e) => {
       e.stopPropagation();
-      drag(e, (dx, dy) => { resizeBy(data, d, dx / view.scale, dy / view.scale, 240, 160); placeCard(c); });
+      drag(e, (dx, dy) => { resizeBy(data, d, dx / view.scale, dy / view.scale, 240, 160); placeCard(c); }, () => c.cm?.refresh());
     });
     c.el.append(rz);
   }
-  c.el.addEventListener('pointerdown', () => { c.el.style.zIndex = ++topZ; });
+  c.el.addEventListener('pointerdown', () => { c.el.style.zIndex = ++topZ; refreshCard(c); }); // 누를 때 바뀐 파일이면 다시 읽는다
   boardEl.appendChild(c.el);
   cards.set(data.id, c);
   placeCard(c);
@@ -3598,6 +3683,7 @@ function addCard(data, doc) {
 }
 // 앱을 다시 켜면 main 의 등록이 비어 있어 복원 때마다 다시 등록한다(doc 없음). 파일이 없어졌으면 카드 안에 안내만.
 async function fillCard(c, doc) {
+  if (cardKind(c.data.path) !== 'doc') return fillTextCard(c, doc ?? await api.readFile(c.data.path).catch((err) => ({ error: err.message })));
   const r = doc ?? await api.openDoc(c.data.path).catch((err) => ({ error: err.message }));
   if (r?.error || !r?.url) return c.body.replaceChildren(el('p', 'doc-msg', r?.error || tr('ui.doc.openFail')));
   const v = r.type === 'application/pdf' ? el('iframe') : el('img');
@@ -3605,6 +3691,39 @@ async function fillCard(c, doc) {
   if (v.tagName === 'IMG') v.alt = basename(c.data.path); else v.title = basename(c.data.path);
   c.body.replaceChildren(v);
 }
+// MD = 탭 미리보기와 같은 sanitize 경로, 코드·글자 = 탭 편집기와 같은 모드·테마의 읽기 전용 CodeMirror(내용은 innerHTML 을 거치지 않는다)
+function fillTextCard(c, r) {
+  if (r?.error || typeof r?.text !== 'string') { c.cm = null; c.body.className = 'body'; return c.body.replaceChildren(el('p', 'doc-msg', r?.error || tr('ui.doc.openFail'))); }
+  c.mtime = r.mtime;
+  if (cardKind(c.data.path) === 'md') {
+    c.body.className = 'body card-md md-view';
+    const top = c.body.scrollTop;
+    c.body.innerHTML = mdHtml(r.text);
+    c.body.scrollTop = top;
+    return;
+  }
+  c.body.className = 'body card-code';
+  if (c.cm) {
+    const { left, top } = c.cm.getScrollInfo();
+    c.cm.setValue(r.text);
+    c.cm.scrollTo(left, top);
+    return;
+  }
+  c.body.replaceChildren();
+  // fixedGutter 끔: 고정 줄 번호 칸은 getBoundingClientRect(보드 배율이 곱해진 값)로 위치를 잡아 배율 ≠ 1 이면 글자를 덮는다
+  c.cm = CodeMirror(c.body, { value: r.text, mode: modeOf(c.data.path), theme: 'bimo', lineNumbers: true, readOnly: true, tabSize: 4, fixedGutter: false });
+  requestAnimationFrame(() => c.cm?.refresh()); // 붙은 뒤 크기를 다시 잰다
+}
+// 바뀐 파일이면 다시 읽는다(카드 누를 때·창으로 돌아올 때·탭에서 저장했을 때). 같은 mtime 이면 그대로.
+async function refreshCard(c) {
+  if (cardKind(c.data.path) === 'doc' || c.reading) return;
+  c.reading = true;
+  const r = await api.readFile(c.data.path).catch((err) => ({ error: err.message }));
+  c.reading = false;
+  if (!cards.has(c.data.id) || (r?.mtime && r.mtime === c.mtime)) return;
+  fillTextCard(c, r);
+}
+addEventListener('focus', () => cards.forEach(refreshCard));
 function placeCard(c) {
   const { x, y, w, h } = c.data;
   Object.assign(c.el.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` });
@@ -5050,7 +5169,7 @@ setInterval(schedTick, 20 * 1000);
   // 폴더 목록(git status 포함)은 큰 저장소에서 몇 초 걸려 보드를 먼저 띄우고 뒤에서 받는다. 오면 사이드바·프로젝트 묶음만 다시 그린다.
   refreshFolders();
   setSidebar(pref.get('sidebar', '1') === '1');
-  setSideTab(pref.get('sideTab', 'projects'));
+  setFilesPanel(pref.get('filesPanel', pref.get('sideTab', '') === 'files' ? '1' : '0') === '1'); // 예전 [파일] 탭을 보던 사람은 패널을 연 채로
   // 읽기 실패로 초기화가 멈추면 빈 화면이 된다. 새 보드로 계속 간다.
   const saved = await api.loadBoard().catch(() => (toast(tr('ui.board.loadFail'), true), null));
   if (saved) {
