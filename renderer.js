@@ -1269,7 +1269,7 @@ async function addNode(data) {
     if (this._compositionPosition.end < this._compositionPosition.start) this._compositionPosition.end = this._textarea.value.length;
     return fin.call(this, wait);
   };
-  ta.addEventListener('blur', () => {
+  const flushIme = () => {
     if (!ime?._compositionPosition || !ime._coreService || (!ime.isComposing && !ime._isSendingComposition)) return;
     const s = ta.value.substring(ime._compositionPosition.start + (ime._dataAlreadySent?.length ?? 0));
     ime._isSendingComposition = false;
@@ -1277,7 +1277,9 @@ async function addNode(data) {
     ime._isComposing = false;
     ime._compositionView?.classList.remove('active');
     if (s) ime._coreService.triggerDataEvent(s, true);
-  }, true);
+  };
+  let aeBlur = false; // Alt+Enter 가 일부러 놓는 blur 는 IME 확정을 xterm 에 맡긴다(여기서도 보내면 두 번)
+  ta.addEventListener('blur', () => { if (!aeBlur) flushIme(); }, true);
   ta.addEventListener('keyup', () => { const g = taGen; setTimeout(() => { if (!composing && g === taGen) ta.value = ''; }, 0); });
   term.attachCustomKeyEventHandler((e) => {
     // Space: 공백은 누르는 즉시 보내고, 꾹 누르면(반복 keydown) 이동 모드. 실제로 끌기 시작하면 그 공백을 지운다(viewport pointerdown). 한글 조합 중(229)은 건드리지 않는다.
@@ -1299,6 +1301,27 @@ async function addNode(data) {
       return false;
     }
     if (isMac) return true;
+    // Alt+Enter(Claude 줄바꿈): 한글을 치다 바로 누르면 IME 가 229 keydown 을 내고, xterm(_handleAnyTextareaChanges)이 입력칸 전과 후가 다르다며
+    // 입력칸에 쌓인 글 전체(공백은 위에서 따로 보내 빠진 "다입력하고나서")를 다시 보냈다. → 조합 글자만 마저 보내고 입력칸을 비운 뒤 줄바꿈을 직접 보낸다.
+    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === 'Enter' || e.code === 'NumpadEnter' || e.key === 'Enter')) {
+      // 한글 조합 중엔 IME 가 229 keydown 을 먼저 내고 진짜 Enter keydown(13)을 한 번 더 낸다 → 229 는 xterm 에도 안 넘기고(쌓인 글 다시 보내기 방지) 13 에서만 처리
+      if (e.type === 'keydown' && e.keyCode !== 229) {
+        e.preventDefault();
+        flushIme(); // 조합 중인 마지막 글자는 직접 보낸다
+        ta.value = '';
+        if (composing && ime?._compositionPosition) {
+          // IME 는 Alt+Enter 로는 조합을 끝내지 않아 마지막 글자("데")를 쥐고 있다가 다음 자음에 "뎅"→"데"+"오" 로 한 번 더 확정했다(2026-11-28 실측).
+          // 입력칸을 잠깐 놓으면(blur) IME 가 조합을 버린다. 그때 xterm 이 compositionend 로 다시 읽어 보내지 않게 읽을 위치를 입력칸 밖으로 민다(다음 compositionstart 가 다시 정한다).
+          ime._compositionPosition = { start: 1e9, end: 1e9 };
+          aeBlur = true;
+          ta.blur();
+          aeBlur = false;
+          setTimeout(() => ta.focus(), 0); // 같은 순간에 다시 잡으면 IME 가 조합을 놓지 않는다
+        }
+        term.input('\x1b\r');
+      }
+      return false;
+    }
     // code 만 보지 않는다: Win+V 기록창이 넣는 Ctrl+V 는 스캔코드가 없어 code 가 비어 올 수 있고, 한글 IME 에서는 key 가 'ㅍ' 다 → keyCode 도 본다
     const ctrlV = (e.code === 'KeyV' || e.key === 'v' || e.key === 'V' || e.keyCode === 86) && e.ctrlKey && !e.altKey && !e.metaKey;
     const shiftIns = (e.code === 'Insert' || e.key === 'Insert' || e.keyCode === 45) && e.shiftKey && !e.ctrlKey && !e.altKey;
@@ -2448,6 +2471,9 @@ api.appVersion().then((v) => {
 // 업데이트 뒤 처음 켜면 바뀐 점 목록. "닫기" 는 다음에 켤 때 또 뜨고, "다시 보지 않기" 는 이 버전에서 다시 안 뜬다.
 // 버전을 올릴 때 맨 위에 한 덩어리 추가한다.
 const CHANGES = [
+  { v: '1.3.5', items: [
+    { ko: '한글을 치다 바로 Alt+Enter 로 줄을 바꾸면 앞 문장이나 마지막 글자가 한 번 더 들어가던 문제를 고쳤습니다.', en: 'Fixed the previous sentence or last character being typed again when pressing Alt+Enter right after typing Korean.' },
+  ] },
   { v: '1.3.4', items: [
     { ko: '예약 출력에 "열린 세션에 넣기"가 생겼습니다. 새 세션을 열지 않고 보드에 열린 세션에 프롬프트를 이어서 넣습니다. 그 세션이 일하는 중이면 넣지 않습니다.', en: 'Schedules can now send the prompt "Into open session": it continues a session already open on the board instead of starting a new one. Skipped while that session is busy.' },
     { ko: 'Bimo 창이 최소화되거나 가려져 있으면 "세션 열기" 예약이 "90초 안에 준비되지 않아" 실패하던 문제를 고쳤습니다.', en: 'Fixed "Open session" schedules failing with "not ready within 90 seconds" while the Bimo window was minimized or hidden.' },
