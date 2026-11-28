@@ -140,9 +140,11 @@
             <fieldset><legend data-i18n="ui.sched.out"></legend>
               <label class="sched-opt"><input type="radio" name="out" value="session"><span class="sched-opt-t" data-i18n="ui.sched.outSession"></span><span class="sched-opt-d" data-i18n="ui.sched.outSessionD"></span></label>
               <label class="sched-opt"><input type="radio" name="out" value="result"><span class="sched-opt-t" data-i18n="ui.sched.outResult"></span><span class="sched-opt-d" data-i18n="ui.sched.outResultD"></span></label>
+              <label class="sched-opt"><input type="radio" name="out" value="node"><span class="sched-opt-t" data-i18n="ui.sched.outNode"></span><span class="sched-opt-d" data-i18n="ui.sched.outNodeD"></span></label>
+              <label class="sched-node" hidden><span data-i18n="ui.sched.node"></span><select name="node"></select></label>
               <div class="sched-trust" hidden><span data-i18n="ui.sched.trustWarn"></span><button type="button" class="sched-trust-go" data-i18n="ui.sched.trustGo"></button></div>
             </fieldset>
-            <label><span data-i18n="ui.sched.perm"></span><select name="perm">
+            <label class="sched-perm"><span data-i18n="ui.sched.perm"></span><select name="perm">
               <option value="ask" data-i18n="ui.sched.permAskD"></option><option value="read" data-i18n="ui.sched.permReadD"></option><option value="edit" data-i18n="ui.sched.permEditD"></option>
             </select></label>
             <p class="sched-note" data-i18n="ui.sched.permNote"></p>

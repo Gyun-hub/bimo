@@ -2448,6 +2448,10 @@ api.appVersion().then((v) => {
 // 업데이트 뒤 처음 켜면 바뀐 점 목록. "닫기" 는 다음에 켤 때 또 뜨고, "다시 보지 않기" 는 이 버전에서 다시 안 뜬다.
 // 버전을 올릴 때 맨 위에 한 덩어리 추가한다.
 const CHANGES = [
+  { v: '1.3.4', items: [
+    { ko: '예약 출력에 "열린 세션에 넣기"가 생겼습니다. 새 세션을 열지 않고 보드에 열린 세션에 프롬프트를 이어서 넣습니다. 그 세션이 일하는 중이면 넣지 않습니다.', en: 'Schedules can now send the prompt "Into open session": it continues a session already open on the board instead of starting a new one. Skipped while that session is busy.' },
+    { ko: 'Bimo 창이 최소화되거나 가려져 있으면 "세션 열기" 예약이 "90초 안에 준비되지 않아" 실패하던 문제를 고쳤습니다.', en: 'Fixed "Open session" schedules failing with "not ready within 90 seconds" while the Bimo window was minimized or hidden.' },
+  ] },
   { v: '1.3.3', items: [
     { ko: '파일 서랍이 오른쪽 패널로 옮겨졌습니다. 오른쪽 위 버튼으로 열고 닫고, 왼쪽 가장자리를 끌어 폭을 바꿉니다.', en: 'The file drawer is now a right-side panel. Open or close it with the button at the top right, and drag its left edge to resize.' },
     { ko: '파일을 보드에 끌어 놓으면 카드로 볼지 탭으로 볼지 고릅니다. Markdown·코드 파일도 보드 카드로 열립니다.', en: 'Drop a file on the board to choose between a card and a tab. Markdown and code files can now open as board cards too.' },
@@ -4885,7 +4889,7 @@ function cleanSched(s) {
   if (['daily', 'weekdays', 'weekly'].includes(s.repeat) && !/^\d\d:\d\d$/.test(s.time ?? '')) return null;
   if (s.repeat === 'weekly' && !(Array.isArray(s.days) && s.days.length && s.days.every((d) => Number.isInteger(d) && d >= 0 && d <= 6))) return null;
   if (typeof s.cwd !== 'string') s.cwd = '';
-  if (!['session', 'result'].includes(s.out)) s.out = 'session';
+  if (!['session', 'result', 'node'].includes(s.out) || (s.out === 'node' && typeof s.node !== 'string')) s.out = 'session';
   if (!Object.hasOwn(PERM_KEY, s.perm)) s.perm = 'ask';
   if (s.last?.state === 'run') s.last = { ...s.last, state: 'fail', msg: tr('ui.sched.interrupted') }; // 도는 중에 앱이 꺼졌다
   return s;
@@ -4913,12 +4917,32 @@ function schedTick() {
     .then((ok) => ok && missed.forEach((s) => s.last?.state !== 'run' && runSched(s)));
 }
 
+// 여러 줄이 중간에 실행되지 않게 붙여넣기(bracketed paste)로 넣고 Enter 는 따로 (main mcpRoute 와 같은 방식)
+// ESC 를 빼야 프롬프트 안의 \x1b[201~ 등으로 붙여넣기를 빠져나가 키 입력이 되지 않는다
+function pastePrompt(id, prompt) {
+  api.write(id, `\x1b[200~${prompt.replace(/\x1b/g, '').trim().replace(/\r?\n/g, '\r')}\x1b[201~`);
+  setTimeout(() => api.write(id, '\r'), 300);
+}
+// 예약에 넣을 수 있는 열린 세션(셸 노드는 뺀다)
+const schedNodes = () => [...nodes.values()].filter((n) => ['claude', 'codex'].includes(n.data.command) && !n.exited);
+
 async function runSched(s) {
   const title = schedTitle(s);
   const at = Date.now();
   s.last = { at, state: 'run' };
   renderSched();
-  if (s.out === 'result') {
+  if (s.out === 'node') {
+    // 열린 세션에 이어 넣기: 일하는 중·권한 요청 중이면 넣지 않는다(넣으면 다음 턴 입력·권한 답으로 섞인다)
+    const n = nodes.get(s.node);
+    const busy = n && (effectiveState(n) === 'working' || (n.state === 'waiting' && n.waitKind === 'permission'));
+    if (n && !n.exited && !busy) {
+      pastePrompt(n.data.id, s.prompt);
+      s.last = { at, state: 'ok', msg: tr('ui.sched.ranIn', { name: n.data.name }) };
+    } else {
+      s.last = { at, state: 'fail', msg: !n || n.exited ? tr('ui.sched.nodeGone') : tr('ui.sched.nodeBusy', { name: n.data.name }) };
+      toast(tr('ui.sched.failToast', { title, msg: s.last.msg }), true);
+    }
+  } else if (s.out === 'result') {
     toast(tr('ui.sched.resultRunning', { title }));
     const r = await api.schedRun({ cwd: s.cwd, prompt: s.prompt, perm: s.perm, title }).catch((e) => ({ ok: false, error: e.message }));
     s.last = { at, state: r?.ok ? 'ok' : 'fail', msg: r?.error ?? '', file: r?.file };
@@ -4938,13 +4962,11 @@ async function runSched(s) {
       await sleep(500);
     }
     if (ok && !n.exited) {
-      // 여러 줄이 중간에 실행되지 않게 붙여넣기(bracketed paste)로 넣고 Enter 는 따로 (main mcpRoute 와 같은 방식)
-      // ESC 를 빼야 프롬프트 안의 \x1b[201~ 등으로 붙여넣기를 빠져나가 키 입력이 되지 않는다
-      api.write(id, `\x1b[200~${s.prompt.replace(/\x1b/g, '').trim().replace(/\r?\n/g, '\r')}\x1b[201~`);
-      setTimeout(() => api.write(id, '\r'), 300);
+      pastePrompt(id, s.prompt);
       s.last = { at, state: 'ok', msg: tr('ui.sched.ranIn', { name: n.data.name }) };
     } else {
-      s.last = { at, state: 'fail', msg: tr(askingTrust(tailLines(n)) ? 'ui.sched.needTrust' : 'ui.sched.notReady') };
+      // screen: 실패 원인 확인용으로 그때 본 화면 끝 줄을 board.json 에 남긴다
+      s.last = { at, state: 'fail', msg: tr(askingTrust(tailLines(n)) ? 'ui.sched.needTrust' : 'ui.sched.notReady'), screen: tailLines(n).filter((l) => l.trim()).slice(-15), exited: !!n?.exited, waited: Date.now() - t0 };
       toast(tr('ui.sched.failToast', { title, msg: s.last.msg }), true);
       if (n && !n.exited) focusNode(n);
     }
@@ -5038,8 +5060,11 @@ function renderSched() {
     };
     tag(basename(s.cwd), SCHED_ICON.folder);
     tag(repeatLabel(s), SCHED_ICON.repeat);
-    tag(tr(s.out === 'result' ? 'ui.sched.tagResult' : 'ui.sched.tagSession'), SCHED_ICON[s.out === 'result' ? 'result' : 'session']);
-    tag(tr(`ui.sched.perm${PERM_KEY[s.perm] ?? 'Ask'}`));
+    if (s.out === 'node') tag(nodes.get(s.node)?.data.name ?? tr('ui.sched.nodeGone'), SCHED_ICON.session);
+    else {
+      tag(tr(s.out === 'result' ? 'ui.sched.tagResult' : 'ui.sched.tagSession'), SCHED_ICON[s.out === 'result' ? 'result' : 'session']);
+      tag(tr(`ui.sched.perm${PERM_KEY[s.perm] ?? 'Ask'}`));
+    }
     mid.append(title, tags);
     if (s.last) {
       const L = { run: tr('ui.sched.lastRun'), ok: tr('ui.sched.lastOk'), fail: tr('ui.sched.lastFail') };
@@ -5106,7 +5131,11 @@ function fillSchedForm(src) {
   sq('hours').value = v.hours;
   sq('time').value = v.time;
   sf.querySelectorAll('[name=day]').forEach((c) => { c.checked = v.days.includes(Number(c.value)); });
-  sf.querySelector(`[name=out][value=${v.out === 'result' ? 'result' : 'session'}]`).checked = true;
+  sf.querySelector(`[name=out][value=${['result', 'node'].includes(v.out) ? v.out : 'session'}]`).checked = true;
+  const list = schedNodes();
+  const none = Object.assign(el('option', null, tr('ui.sched.noNode')), { value: '' });
+  sq('node').replaceChildren(...(list.length ? list.map((n) => Object.assign(el('option', null, `${n.data.name} · ${basename(n.data.cwd)}`), { value: n.data.id })) : [none]));
+  sq('node').value = list.some((n) => n.data.id === v.node) ? v.node : list.includes(focused) ? focused.data.id : (list[0]?.data.id ?? '');
   sq('perm').value = Object.hasOwn(PERM_KEY, v.perm) ? v.perm : 'ask';
   sf.querySelector('.sched-err').textContent = '';
   delete sf.dataset.trust;
@@ -5116,6 +5145,10 @@ const schedDir = () => schedDirs[Number(sq('cwd').value)]?.path ?? '';
 function syncSchedForm() {
   setPathText(sf.querySelector('.sched-path'), schedDir() || tr('ui.home'));
   sf.querySelectorAll('[data-for]').forEach((x) => { x.hidden = !x.dataset.for.split(' ').includes(sq('repeat').value); });
+  // 열린 세션에 넣기는 그 세션의 폴더·권한을 그대로 쓴다
+  const toNode = sf.querySelector('[name=out]:checked')?.value === 'node';
+  sf.querySelector('.sched-node').hidden = !toNode;
+  [sq('cwd').closest('label'), sf.querySelector('.sched-perm'), sf.querySelector('.sched-note')].forEach((x) => { x.hidden = toNode; });
   checkTrust();
 }
 // 세션 열기 + 아직 신뢰 안 한 폴더면 경고(결과만 받기는 신뢰 확인 없이 돈다)
@@ -5144,7 +5177,13 @@ sf.addEventListener('submit', (e) => {
     hours: Math.round(Number(sq('hours').value)),
     out: sf.querySelector('[name=out]:checked').value,
     perm: sq('perm').value,
+    node: sq('node').value,
   };
+  if (s.out === 'node') {
+    const n = nodes.get(s.node);
+    if (!n) return err(tr('ui.sched.errNode'));
+    s.cwd = n.data.cwd; // 목록의 폴더 태그·제목용
+  } else delete s.node;
   const goTrust = sf.dataset.trust === '1';
   delete sf.dataset.trust;
   if (!s.prompt) return err(tr('ui.sched.errPrompt'));

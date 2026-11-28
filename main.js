@@ -282,7 +282,8 @@ function createWindow() {
     ...(process.platform === 'darwin'
       ? { titleBarStyle: 'hiddenInset' }
       : { titleBarStyle: 'hidden', titleBarOverlay: { color: '#1b1d23', symbolColor: '#e6e8ec', height: 52 } }),
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true },
+    // backgroundThrottling: 최소화·가려진 창에선 Chromium 이 타이머를 최대 1분에 한 번으로 묶어 예약 세션의 입력창 대기(renderer runSched)가 90초를 넘긴다
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, backgroundThrottling: false },
   });
   // 창은 index.html 하나만 띄운다. 마크다운 안의 폼·링크 등으로 다른 페이지로 넘어가면 그 페이지가 preload API(터미널 실행)를 얻게 된다.
   // http(s) 새 창 요청은 기본 브라우저로 넘기고, 나머지는 전부 막는다.
